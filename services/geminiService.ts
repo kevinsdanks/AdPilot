@@ -54,8 +54,14 @@ const safeParseJson = (text: string): any => {
     // 4. Aggressive cleanup for common LLM syntax errors
     try {
         // Remove trailing commas before closing braces/brackets
-        // Note: This regex is imperfect and might match inside strings, but it's a last resort
         cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); 
+        
+        // Fix missing commas between objects (e.g. }{ -> }, {) - Common in large arrays
+        cleaned = cleaned.replace(/}\s*{/g, '}, {');
+        // Fix missing commas between array end and object start
+        cleaned = cleaned.replace(/]\s*{/g, '], {');
+        // Fix missing commas between object end and array start
+        cleaned = cleaned.replace(/}\s*\[/g, '}, [');
         
         // Remove non-printable control characters (excluding standard whitespace)
         cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
