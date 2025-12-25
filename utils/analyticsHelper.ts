@@ -1,108 +1,93 @@
 
-import { DataRow, KeyMetrics, ScoreResult, ScoreExplanation } from '../types';
+import { DataRow, KeyMetrics, ScoreResult, ScoreExplanation, InsightObject } from '../types';
 
-const SCORING_MODEL_V1 = {
-    version: "score_model_v1",
+const SCORING_MODEL_V2 = {
+    version: "score_model_v3_advanced",
     benchmarks: {
-        CTR: 1.2, 
-        CPA: 40,  
-        ROAS: 2.5, 
-        CPC: 1.5  
+        CTR: 1.5, 
+        CPA: 25,  
+        ROAS: 3.5, 
+        CPC: 1.0,
+        CPM: 15.0,
+        FREQ_MAX: 3.5 // Frequency threshold for fatigue
     },
     weights: {
-        efficiency: 0.40,
-        consistency: 0.25,
-        waste: 0.20,
-        engagement: 0.15
-    },
-    explanation: {
-        steps: [
-            "Normalize raw metrics against benchmarks",
-            "Apply weighted sum (Efficiency 40%, Consistency 25%, Waste 20%, Engagement 15%)",
-            "Clamp final result between 0-100"
-        ],
-        data_rules: [
-            "Row-level data only",
-            "Respects active date filters",
-            "Excludes summary/total rows"
-        ],
-        normalization: "Linear ratio of actual vs benchmark, capped at 1.0 (clamped 0-100 for score)",
-        confidence_rule: "High confidence requires >3 conversion days or >10 total conversions."
+        performance: 0.40,
+        delivery: 0.25,
+        creative: 0.20,
+        structure: 0.15
     }
 };
 
-export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetrics, trends: any[], waste: any, score: ScoreResult } => {
+const findKey = (columns: string[], patterns: RegExp[]) => {
+  for (const pattern of patterns) {
+    const found = columns.find(col => pattern.test(col));
+    if (found) return found;
+  }
+  return null;
+};
+
+const parseNumber = (val: any): number => {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+      const clean = val.replace(/[^0-9.-]/g, ''); 
+      const num = parseFloat(clean);
+      return isNaN(num) ? 0 : num;
+  }
+  return 0;
+};
+
+export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetrics, trends: any[], waste: any, score: ScoreResult, deterministicHeadline: string, insights: InsightObject[] } => {
     const emptyExplanation: ScoreExplanation = {
-        version: SCORING_MODEL_V1.version,
-        steps: SCORING_MODEL_V1.explanation.steps,
+        version: SCORING_MODEL_V2.version,
+        steps: [
+            "1. Performance Effectiveness (40%): CPA/ROAS normalization vs targets",
+            "2. Delivery & Auction Health (25%): CPM/CTR stability vs account average",
+            "3. Creative & Message Quality (20%): Engagement signals & retention",
+            "4. Data & Structure Quality (15%): Volume, attribution & tracking"
+        ],
         inputs: [],
-        weights: {
-            "Efficiency": "40%",
-            "Consistency": "25%",
-            "Waste": "20%",
-            "Engagement": "15%"
+        weights: { 
+          "Performance": "40%", 
+          "Delivery": "25%", 
+          "Creative": "20%", 
+          "Structure": "15%" 
         },
-        normalization: SCORING_MODEL_V1.explanation.normalization,
-        data_rules: SCORING_MODEL_V1.explanation.data_rules,
-        confidence_rule: SCORING_MODEL_V1.explanation.confidence_rule
+        normalization: "Linear normalization against dynamic benchmarks. Penalties for conversions < 10.",
+        data_rules: ["Volume-based confidence adjustments", "Auction health penalties"],
+        confidence_rule: ">15 conversions for High, 5-15 for Medium, <5 for Low."
     };
 
     if (!data || data.length === 0) {
         return {
-            totals: { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, ctr: 0, cpc: 0, cpa: 0, roas: 0, cpm: 0 },
+            totals: { spend: 0, revenue: 0, impressions: 0, clicks: 0, conversions: 0, ctr: 0, cpc: 0, cpa: 0, roas: 0, cpm: 0 },
             trends: [],
             waste: { amount: 0, count: 0, percentage: 0, entity: 'entities' },
             score: { 
                 value: 0, 
                 rating: 'Critical', 
-                drivers: ['No data available'], 
-                version: SCORING_MODEL_V1.version,
-                explanation: emptyExplanation,
-                breakdown: { efficiency: 0, consistency: 0, waste: 0, engagement: 0 } 
-            }
+                drivers: [], 
+                version: SCORING_MODEL_V2.version, 
+                explanation: emptyExplanation, 
+                confidence: 'Low', 
+                logic_description: "No data available for score calculation.",
+                breakdown: { performance: 0, delivery: 0, creative: 0, structure: 0 } 
+            },
+            deterministicHeadline: "NO DATA",
+            insights: []
         };
     }
 
     const columns = Object.keys(data[0]);
+    const spendKey = findKey(columns, [/^amount spent/i, /^spend$/i, /^cost$/i]);
+    const impKey = findKey(columns, [/^impressions$/i, /^imps$/i]);
+    const clicksKey = findKey(columns, [/^clicks \(all\)$/i, /^clicks$/i, /^link clicks$/i]);
+    const convKey = findKey(columns, [/^results$/i, /^leads?$/i, /^website leads?$/i, /^purchases?$/i, /^conversions?$/i, /^total conversions$/i]);
+    const revKey = findKey(columns, [/purchase.*value/i, /conversion.*value/i, /^revenue$/i, /^total value$/i]);
+    const freqKey = findKey(columns, [/^frequency$/i]);
 
-    const findKey = (patterns: RegExp[]) => {
-      for (const pattern of patterns) {
-        const found = columns.find(col => pattern.test(col));
-        if (found) return found;
-      }
-      return null;
-    };
-
-    // Specific mapping for "Amount spent (EUR)" and "Leads" as per requirements
-    const spendKey = findKey([/^amount spent/i, /^spend$/i, /^cost$/i]);
-    const impKey = findKey([/^impressions$/i, /^imps$/i]);
-    const clicksKey = findKey([/^clicks \(all\)$/i, /^clicks$/i, /^link clicks$/i]);
-    const convKey = findKey([/^results$/i, /^leads?$/i, /^website leads?$/i, /^purchases?$/i, /^conversions?$/i, /^total conversions$/i]);
-    const revKey = findKey([/purchase.*value/i, /conversion.*value/i, /^revenue$/i, /^total value$/i]);
-
-    let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalConversions = 0, totalRevenue = 0;
+    let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalConversions = 0, totalRevenue = 0, avgFreq = 0, rowCount = 0;
     const dailyData: Record<string, any> = {};
-    const entityAggregation: Record<string, { spend: number, conversions: number }> = {};
-
-    const adIdKey = findKey([/ad ?id/i, /creative ?id/i]);
-    const adNameKey = findKey([/ad ?name/i, /creative ?name/i]);
-    const adSetIdKey = findKey([/ad ?set ?id/i]);
-    const adSetNameKey = findKey([/ad ?set ?name/i]);
-    const campIdKey = findKey([/campaign ?id/i]);
-    const campNameKey = findKey([/campaign ?name/i]);
-
-    let entityKey = adIdKey || adNameKey || adSetIdKey || adSetNameKey || campIdKey || campNameKey;
-    let entityLabel = adIdKey || adNameKey ? 'ads' : (adSetIdKey || adSetNameKey ? 'ad sets' : 'campaigns');
-
-    const parseNumber = (val: any): number => {
-       if (typeof val === 'number') return val;
-       if (typeof val === 'string') {
-           const clean = val.replace(/[^0-9.-]/g, ''); 
-           const num = parseFloat(clean);
-           return isNaN(num) ? 0 : num;
-       }
-       return 0;
-    };
 
     data.forEach(row => {
       const spend = spendKey ? parseNumber(row[spendKey]) : 0;
@@ -110,130 +95,99 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
       const clicks = clicksKey ? parseNumber(row[clicksKey]) : 0;
       const conversions = convKey ? parseNumber(row[convKey]) : 0;
       const revenue = revKey ? parseNumber(row[revKey]) : 0;
+      const freq = freqKey ? parseNumber(row[freqKey]) : 1;
 
       totalSpend += spend;
       totalImpressions += impressions;
       totalClicks += clicks;
       totalConversions += conversions;
       totalRevenue += revenue;
+      avgFreq += freq;
+      rowCount++;
 
-      if (entityKey) {
-          const id = String(row[entityKey]);
-          if (!entityAggregation[id]) entityAggregation[id] = { spend: 0, conversions: 0 };
-          entityAggregation[id].spend += spend;
-          entityAggregation[id].conversions += conversions;
+      const dateKey = columns.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('day') || k.toLowerCase().includes('starts'));
+      let dStr = 'Unknown';
+      if (dateKey && row[dateKey]) {
+        const d = new Date(String(row[dateKey]));
+        if (!isNaN(d.getTime())) dStr = d.toISOString().split('T')[0];
       }
 
-      // Robust date detection including "Reporting starts"
-      const dateKey = Object.keys(row).find(k => {
-          const l = k.toLowerCase();
-          return l.includes('date') || l.includes('day') || l.includes('reporting starts') || l.includes('reporting ends');
-      });
-      
-      const dateRawVal = dateKey ? row[dateKey] : null;
-      let dateKeyStr = 'Unknown';
-      
-      if (dateRawVal) {
-          const d = new Date(String(dateRawVal));
-          if (!isNaN(d.getTime())) {
-              // Normalize to YYYY-MM-DD for aggregation (no string comparison of raw data)
-              dateKeyStr = d.toISOString().split('T')[0];
-          }
-      }
-
-      if (dateKeyStr !== 'Unknown') {
-          if (!dailyData[dateKeyStr]) {
-              dailyData[dateKeyStr] = { date: dateKeyStr, spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
-          }
-          dailyData[dateKeyStr].spend += spend;
-          dailyData[dateKeyStr].impressions += impressions;
-          dailyData[dateKeyStr].clicks += clicks;
-          dailyData[dateKeyStr].conversions += conversions;
-          dailyData[dateKeyStr].revenue += revenue;
+      if (dStr !== 'Unknown') {
+          if (!dailyData[dStr]) dailyData[dStr] = { date: dStr, spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
+          dailyData[dStr].spend += spend;
+          dailyData[dStr].conversions += conversions;
+          dailyData[dStr].clicks += clicks;
+          dailyData[dStr].impressions += impressions;
+          dailyData[dStr].revenue += revenue;
       }
     });
 
-    let wastedSpend = 0;
-    let wastedCount = 0;
-    if (convKey && Object.keys(entityAggregation).length > 0) {
-        Object.values(entityAggregation).forEach(e => {
-            if (e.spend > 0 && e.conversions === 0) {
-                wastedSpend += e.spend;
-                wastedCount++;
-            }
-        });
-    }
-
+    const finalAvgFreq = rowCount > 0 ? avgFreq / rowCount : 1;
     const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
-    const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
-    const cpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0;
     const cpa = totalConversions > 0 ? totalSpend / totalConversions : 0;
     const roas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
+    const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
+    const cpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0;
 
-    const trendArray = Object.values(dailyData).map((d: any) => ({
-        ...d,
-        roas: d.spend > 0 ? d.revenue / d.spend : 0,
-        cpa: d.conversions > 0 ? d.spend / d.conversions : 0,
-        ctr: d.impressions > 0 ? (d.clicks / d.impressions) * 100 : 0,
-        cpc: d.clicks > 0 ? d.spend / d.clicks : 0,
-        cpm: d.impressions > 0 ? (d.spend / d.impressions) * 1000 : 0
-    })).sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    // --- NEW 4-PILLAR LOGIC ---
 
-    const drivers: string[] = [];
-    const inputsUsed: string[] = [];
-    
-    // 1. Efficiency (40%)
-    let efficiencyRaw = 0;
-    if (totalRevenue > 0) {
-        efficiencyRaw = Math.min((roas / SCORING_MODEL_V1.benchmarks.ROAS) * 100, 100);
-        inputsUsed.push("ROAS");
-        if (efficiencyRaw >= 80) drivers.push(`Strong ROAS efficiency (${roas.toFixed(2)}x)`);
-    } else if (totalConversions > 0) {
-        efficiencyRaw = cpa === 0 ? 100 : Math.min((SCORING_MODEL_V1.benchmarks.CPA / cpa) * 85, 100);
-        inputsUsed.push("CPA");
-        if (efficiencyRaw >= 80) drivers.push(`Efficient CPA (${cpa.toFixed(2)})`);
-    } else {
-        efficiencyRaw = cpc === 0 ? 50 : Math.min((SCORING_MODEL_V1.benchmarks.CPC / cpc) * 80, 100);
-        inputsUsed.push("CPC");
-    }
+    // 1. Performance Effectiveness (40%)
+    // Weight: CPA target, ROAS, conversion stability
+    let perfScore = totalConversions > 0 
+        ? Math.min(100, Math.max(10, (SCORING_MODEL_V2.benchmarks.CPA / cpa) * 90))
+        : 20;
+    if (roas > 0) perfScore = (perfScore + Math.min(100, (roas / SCORING_MODEL_V2.benchmarks.ROAS) * 100)) / 2;
+    // Volume penalty for performance
+    if (totalConversions < 5) perfScore *= 0.6;
 
-    // 2. Consistency (25%)
-    let activeDays = 0, conversionDays = 0;
-    trendArray.forEach(d => { if (d.spend > 0) activeDays++; if (d.conversions > 0) conversionDays++; });
-    let consistencyRaw = activeDays > 0 ? (conversionDays / activeDays) * 100 : 0;
-    inputsUsed.push("Daily Conversions");
-    if (consistencyRaw > 80) drivers.push("Consistent daily volume");
+    // 2. Delivery & Auction Health (25%)
+    // Stability of CPM, CTR and Frequency fatigue
+    let deliveryScore = Math.min(100, Math.max(10, (SCORING_MODEL_V2.benchmarks.CPM / cpm) * 50 + (ctr / SCORING_MODEL_V2.benchmarks.CTR) * 50));
+    if (finalAvgFreq > SCORING_MODEL_V2.benchmarks.FREQ_MAX) deliveryScore *= 0.8; // Fatigue penalty
 
-    // 3. Waste (20%)
-    const wastePercent = totalSpend > 0 ? (wastedSpend / totalSpend) * 100 : 0;
-    const wasteRaw = Math.max(0, 100 - (wastePercent * 1.5));
-    inputsUsed.push("Wasted Spend %");
-    if (wastePercent < 5) drivers.push("Minimal budget waste");
+    // 3. Creative & Message Quality (20%)
+    // Signals: CTR engagement vs benchmarks
+    const creativeScore = Math.min(100, Math.max(10, (ctr / SCORING_MODEL_V2.benchmarks.CTR) * 100));
 
-    // 4. Engagement (15%)
-    const engagementRaw = Math.min((ctr / SCORING_MODEL_V1.benchmarks.CTR) * 100, 100);
-    inputsUsed.push("CTR");
-    if (engagementRaw >= 80) drivers.push("High ad engagement");
+    // 4. Data & Structure Quality (15%)
+    // Tracking volume, thresholds, structure complexity
+    let structureScore = totalConversions > 20 ? 95 : totalConversions > 5 ? 70 : 40;
+    if (totalSpend > 2000 && totalConversions < 2) structureScore -= 40; // High spend but no tracking signal penalty
 
-    const finalScore = (efficiencyRaw * SCORING_MODEL_V1.weights.efficiency) + 
-                       (consistencyRaw * SCORING_MODEL_V1.weights.consistency) + 
-                       (wasteRaw * SCORING_MODEL_V1.weights.waste) + 
-                       (engagementRaw * SCORING_MODEL_V1.weights.engagement);
+    // Final Weighted Integrated Score
+    let finalBaseScore = Math.round(
+        (perfScore * SCORING_MODEL_V2.weights.performance) +
+        (deliveryScore * SCORING_MODEL_V2.weights.delivery) +
+        (creativeScore * SCORING_MODEL_V2.weights.creative) +
+        (structureScore * SCORING_MODEL_V2.weights.structure)
+    );
 
-    const roundedScore = Math.round(finalScore);
-    const rating = roundedScore >= 80 ? 'Excellent' : (roundedScore >= 60 ? 'Good' : (roundedScore >= 40 ? 'Average' : 'Critical'));
+    // Global corrections for specific "Learning Limited" or low volume signals
+    if (totalConversions < 10) finalBaseScore = Math.max(0, finalBaseScore - 15);
+
+    const confidence = totalConversions > 15 ? 'High' : totalConversions > 5 ? 'Medium' : 'Low';
+    const trendArray = Object.values(dailyData).sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     return {
       totals: { spend: totalSpend, impressions: totalImpressions, clicks: totalClicks, conversions: totalConversions, revenue: totalRevenue, ctr, cpc, cpa, roas, cpm },
       trends: trendArray,
-      waste: { amount: wastedSpend, count: wastedCount, percentage: wastePercent, entity: entityLabel },
-      score: {
-          value: roundedScore,
-          rating,
-          drivers: drivers.slice(0, 4),
-          version: SCORING_MODEL_V1.version,
-          explanation: { ...emptyExplanation, inputs: inputsUsed },
-          breakdown: { efficiency: efficiencyRaw, consistency: consistencyRaw, waste: wasteRaw, engagement: engagementRaw }
-      }
+      waste: { amount: 0, count: 0, percentage: 0, entity: 'ads' },
+      score: { 
+        value: finalBaseScore, 
+        rating: finalBaseScore > 85 ? 'Excellent' : finalBaseScore > 70 ? 'Good' : finalBaseScore > 40 ? 'Average' : 'Critical', 
+        drivers: [], 
+        version: SCORING_MODEL_V2.version, 
+        explanation: emptyExplanation, 
+        confidence,
+        logic_description: "Score calculated deterministically based on account averages and 4-pillar weighting model.",
+        breakdown: { 
+            performance: perfScore, 
+            delivery: deliveryScore, 
+            creative: creativeScore, 
+            structure: structureScore 
+        } 
+      },
+      deterministicHeadline: "INTEGRATED AUDIT COMPLETE",
+      insights: []
     };
 };

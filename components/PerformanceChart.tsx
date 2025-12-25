@@ -12,7 +12,7 @@ import {
   Tooltip,
   Legend
 } from 'recharts';
-import { LineChart as LineChartIcon, BarChart as BarChartIcon, Info, Activity } from 'lucide-react';
+import { LineChart as LineChartIcon, BarChart as BarChartIcon } from 'lucide-react';
 
 interface PerformanceChartProps {
   data: any[];
@@ -21,71 +21,89 @@ interface PerformanceChartProps {
 }
 
 const METRIC_CONFIG: Record<string, { label: string, color: string, format: 'currency' | 'number' | 'percent' }> = {
-  spend: { label: 'Spend', color: '#6366f1', format: 'currency' },
-  conversions: { label: 'Leads', color: '#ec4899', format: 'number' },
+  spend: { label: 'Spend', color: '#ec4899', format: 'currency' },
+  conversions: { label: 'Leads', color: '#6366f1', format: 'number' },
   cpa: { label: 'CPA', color: '#f59e0b', format: 'currency' },
   cpc: { label: 'CPC', color: '#3b82f6', format: 'currency' },
   ctr: { label: 'CTR', color: '#06b6d4', format: 'percent' },
-  cpm: { label: 'CPM', color: '#94a3b8', format: 'currency' },
-  revenue: { label: 'Revenue', color: '#10b981', format: 'currency' },
-  roas: { label: 'ROAS', color: '#8b5cf6', format: 'number' }
+  cpm: { label: 'CPM', color: '#94a3b8', format: 'currency' }
 };
 
 export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, currency, goal }) => {
   const availableMetrics = ['spend', 'conversions', 'cpa', 'cpc', 'ctr', 'cpm'];
-
   const [chartType, setChartType] = useState<'line' | 'bar'>('line');
-  const [metric1, setMetric1] = useState<string>('spend');
-  const [metric2, setMetric2] = useState<string>('conversions');
+  const [metric1, setMetric1] = useState<string>('conversions'); 
+  const [metric2, setMetric2] = useState<string>('spend'); 
   const [hiddenMetrics, setHiddenMetrics] = useState<string[]>([]);
 
   useEffect(() => {
-    // Diagnostic logging as requested
-    console.log('--- Chart Performance Trace ---');
-    console.log('Row count after filter:', data.length);
-    if (data.length > 0) {
-        const validDates = data.filter(d => d.date && !isNaN(new Date(d.date).getTime()));
-        console.log('Valid date parse count:', validDates.length);
-        const uniqueDays = new Set(data.map(d => d.date)).size;
-        console.log('Unique day count:', uniqueDays);
-        console.log('Final timeseries length:', data.length);
-        console.log('First 3 points:', data.slice(0, 3));
-    } else {
-        console.log('No trend data available to plot.');
-    }
+    setHiddenMetrics([]);
   }, [data]);
 
-  useEffect(() => {
-    setHiddenMetrics([]);
-  }, [metric1, metric2]);
+  const normalizedData = useMemo(() => {
+    return data.map(item => {
+      // Find possible keys for all configured metrics
+      const convKey = Object.keys(item).find(k => k.toLowerCase() === 'conversions' || k.toLowerCase() === 'leads' || k.toLowerCase() === 'results' || k.toLowerCase() === 'total conversions');
+      const spendKey = Object.keys(item).find(k => k.toLowerCase() === 'spend' || k.toLowerCase() === 'amount spent' || k.toLowerCase() === 'cost');
+      const impKey = Object.keys(item).find(k => k.toLowerCase() === 'impressions' || k.toLowerCase() === 'imps');
+      const clicksKey = Object.keys(item).find(k => k.toLowerCase() === 'clicks' || k.toLowerCase() === 'link clicks');
+
+      const spendValue = spendKey ? Number(item[spendKey] || 0) : 0;
+      const convValue = convKey ? Number(item[convKey] || 0) : 0;
+      const impValue = impKey ? Number(item[impKey] || 0) : 0;
+      const clicksValue = clicksKey ? Number(item[clicksKey] || 0) : 0;
+
+      const ctrValue = impValue > 0 ? (clicksValue / impValue) * 100 : Number(item.ctr || 0);
+      const cpaValue = convValue > 0 ? (spendValue / convValue) : Number(item.cpa || 0);
+      const cpcValue = clicksValue > 0 ? (spendValue / clicksValue) : Number(item.cpc || 0);
+      const cpmValue = impValue > 0 ? (spendValue / impValue) * 1000 : Number(item.cpm || 0);
+      
+      return {
+        ...item,
+        conversions: convValue,
+        spend: spendValue,
+        cpa: cpaValue,
+        cpc: cpcValue,
+        ctr: ctrValue,
+        cpm: cpmValue,
+        date: item.date || item.Date || item.starts || 'N/A'
+      };
+    });
+  }, [data]);
 
   const toggleMetric = (e: any) => {
     const { dataKey } = e;
-    setHiddenMetrics(prev => 
-      prev.includes(dataKey) 
-        ? prev.filter(key => key !== dataKey)
-        : [...prev, dataKey]
-    );
+    setHiddenMetrics(prev => prev.includes(dataKey) ? prev.filter(k => k !== dataKey) : [...prev, dataKey]);
   };
 
   const formatValue = (val: number, key: string) => {
     const config = METRIC_CONFIG[key] || { format: 'number' };
-    if (key === 'cpa' && (val === 0 || !isFinite(val))) return '—';
     if (config.format === 'currency') return val.toLocaleString(undefined, { style: 'currency', currency });
     if (config.format === 'percent') return `${val.toFixed(2)}%`;
     return val.toLocaleString();
   };
 
+  const formatDateLabel = (dateStr: string) => {
+    if (dateStr === 'N/A') return dateStr;
+    try {
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) return dateStr;
+      return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date);
+    } catch (e) {
+      return dateStr;
+    }
+  };
+
   const MetricSelect = ({ value, onChange, label }: { value: string, onChange: (v: string) => void, label: string }) => (
-    <div className="flex flex-col gap-1">
-      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</label>
+    <div className="flex flex-col gap-1.5 text-left">
+      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">{label}</label>
       <select 
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="px-2 py-1.5 bg-white border border-slate-200 rounded-md text-sm text-slate-700 font-medium hover:border-indigo-300 focus:ring-2 focus:ring-indigo-100 outline-none transition-all cursor-pointer min-w-[120px]"
+        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 font-extrabold hover:border-indigo-300 outline-none cursor-pointer shadow-sm transition-all"
       >
         {availableMetrics.map(m => (
-          <option key={m} value={m}>{m === 'conversions' ? 'Leads' : METRIC_CONFIG[m]?.label || m}</option>
+          <option key={m} value={m}>{METRIC_CONFIG[m]?.label || m}</option>
         ))}
       </select>
     </div>
@@ -94,27 +112,19 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       const dataPoint = payload[0].payload;
-      const tooltipMetrics = ['spend', 'conversions', 'cpa', 'ctr'];
-      
       return (
-        <div className="bg-slate-900/95 p-4 rounded-xl border border-slate-800 shadow-xl text-xs text-white min-w-[180px] backdrop-blur-sm">
-          <p className="font-bold text-slate-300 mb-3 border-b border-slate-700 pb-2">
-            {new Date(label).toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
-          </p>
-          <div className="space-y-2">
-            {tooltipMetrics.map(m => {
-               const displayLabel = m === 'conversions' ? 'Leads' : METRIC_CONFIG[m]?.label || m;
-               const val = dataPoint[m] || 0;
-               return (
-                <div key={m} className="flex justify-between gap-6">
-                    <div className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: METRIC_CONFIG[m]?.color }}></div>
-                        <span className="text-slate-400">{displayLabel}:</span>
+        <div className="bg-slate-900/95 p-6 rounded-[2rem] border border-white/10 shadow-2xl text-[11px] text-white text-left min-w-[240px] backdrop-blur-xl">
+          <p className="font-black text-slate-400 mb-5 border-b border-white/10 pb-4 uppercase tracking-[0.2em]">{formatDateLabel(label)}</p>
+          <div className="space-y-3.5">
+            {availableMetrics.map(m => (
+                <div key={m} className="flex justify-between gap-10 items-center">
+                    <div className="flex items-center gap-3">
+                        <div className="w-2 h-2 rounded-full shadow-inner" style={{ backgroundColor: METRIC_CONFIG[m]?.color }} />
+                        <span className="text-slate-400 font-black uppercase tracking-widest text-[10px] leading-none">{METRIC_CONFIG[m]?.label || m}:</span>
                     </div>
-                    <span className="font-mono">{formatValue(val, m)}</span>
+                    <span className="font-mono font-black text-xs leading-none">{formatValue(dataPoint[m] || 0, m)}</span>
                 </div>
-               );
-            })}
+            ))}
           </div>
         </div>
       );
@@ -122,165 +132,60 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
     return null;
   };
 
-  const chartData = useMemo(() => {
-    if (!data || data.length === 0) return [];
-    return data;
-  }, [data]);
-
-  const isEmpty = chartData.length === 0;
-  const isSparse = chartData.length > 0 && chartData.length < 3;
-
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 mb-8 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row md:items-start justify-between gap-6 mb-6">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-indigo-50 rounded-lg">
-             {chartType === 'line' ? <LineChartIcon className="w-6 h-6 text-indigo-600" /> : <BarChartIcon className="w-6 h-6 text-indigo-600" />}
+    <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-sm p-12 mb-12 overflow-hidden">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10 mb-12">
+        <div className="flex items-center gap-5">
+          <div className="p-4 bg-indigo-50 rounded-[1.8rem] text-indigo-600 shadow-inner border border-indigo-100">
+             {chartType === 'line' ? <LineChartIcon className="w-8 h-8" /> : <BarChartIcon className="w-8 h-8" />}
           </div>
-          <div>
-            <h3 className="font-bold text-slate-900 text-lg">Performance Over Time</h3>
-            <div className="flex items-center gap-2">
-                <p className="text-slate-500 text-sm">Daily trends for selected metrics</p>
-                {isSparse && (
-                    <div className="flex items-center gap-1 text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200">
-                        <Info className="w-2.5 h-2.5" />
-                        <span>Low density</span>
-                    </div>
-                )}
-            </div>
+          <div className="text-left">
+            <h3 className="font-extrabold text-slate-900 text-3xl tracking-tight leading-none mb-2">Performance Analytics</h3>
+            <p className="text-slate-400 text-[11px] font-black uppercase tracking-[0.2em] leading-none">Real-time auction intelligence & trends</p>
           </div>
         </div>
-
-        <div className="flex flex-wrap items-center gap-4">
-             <div className="flex bg-slate-100 p-1 rounded-lg">
-                <button 
-                  onClick={() => setChartType('line')} 
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md transition-all ${chartType === 'line' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <LineChartIcon className="w-3.5 h-3.5" /> Line
-                </button>
-                <button 
-                  onClick={() => setChartType('bar')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-md transition-all ${chartType === 'bar' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <BarChartIcon className="w-3.5 h-3.5" /> Bar
-                </button>
+        <div className="flex flex-wrap items-center gap-6">
+             <div className="flex bg-slate-100 p-1.5 rounded-2xl shadow-inner border border-slate-200">
+                <button onClick={() => setChartType('line')} className={`px-8 py-2.5 text-[11px] font-black uppercase rounded-xl transition-all ${chartType === 'line' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}>Line</button>
+                <button onClick={() => setChartType('bar')} className={`px-8 py-2.5 text-[11px] font-black uppercase rounded-xl transition-all ${chartType === 'bar' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}>Bar</button>
              </div>
-             <div className="h-8 w-px bg-slate-200 hidden md:block"></div>
-             <div className="flex gap-3 bg-slate-50 p-2 rounded-xl border border-slate-100">
-                <MetricSelect label="Left Axis" value={metric1} onChange={setMetric1} />
-                <MetricSelect label="Right Axis" value={metric2} onChange={setMetric2} />
+             <div className="flex gap-6 bg-slate-50 p-4 rounded-[1.8rem] border border-slate-100 shadow-sm">
+                <MetricSelect label="Axis Primary" value={metric1} onChange={setMetric1} />
+                <MetricSelect label="Axis Secondary" value={metric2} onChange={setMetric2} />
              </div>
         </div>
       </div>
-
-      <div className="h-[350px] w-full relative">
-        {isEmpty && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pointer-events-none">
-                <div className="flex flex-col items-center bg-white/60 backdrop-blur-[2px] p-6 rounded-2xl border border-slate-100/50 shadow-sm">
-                    <Activity className="w-8 h-8 text-slate-300 mb-3 animate-pulse" />
-                    <span className="text-sm font-bold text-slate-400">Waiting for sufficient daily data signal...</span>
-                    <span className="text-[10px] text-slate-300 mt-1 uppercase tracking-widest font-black">Historical context required</span>
-                </div>
-            </div>
-        )}
+      <div className="h-[500px] w-full px-4">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id="colorMetric1" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={METRIC_CONFIG[metric1]?.color || '#8884d8'} stopOpacity={0.3}/>
-                <stop offset="95%" stopColor={METRIC_CONFIG[metric1]?.color || '#8884d8'} stopOpacity={0}/>
-              </linearGradient>
-            </defs>
+          <ComposedChart data={normalizedData} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
             <XAxis 
-                dataKey="date" 
-                tickFormatter={(str) => {
-                    if (!str) return '';
-                    const d = new Date(str);
-                    return isNaN(d.getTime()) ? str : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-                }}
-                stroke="#94a3b8"
-                fontSize={11}
-                tickMargin={10}
-                minTickGap={30}
-                hide={false}
+              dataKey="date" 
+              tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 900 }} 
+              tickMargin={15} 
+              axisLine={false} 
+              tickLine={false}
+              tickFormatter={formatDateLabel}
             />
-            <YAxis 
-                yAxisId="left"
-                orientation="left"
-                stroke={METRIC_CONFIG[metric1]?.color || '#8884d8'}
-                fontSize={11}
-                tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val}
-                hide={false}
-            />
-            <YAxis 
-                yAxisId="right"
-                orientation="right"
-                stroke={METRIC_CONFIG[metric2]?.color || '#82ca9d'}
-                fontSize={11}
-                tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val}
-                hide={false}
-            />
-            {!isEmpty && <Tooltip content={<CustomTooltip />} />}
+            <YAxis yAxisId="left" tick={{ fontSize: 11, fill: '#6366f1', fontWeight: 900 }} axisLine={false} tickLine={false} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: '#ec4899', fontWeight: 900 }} axisLine={false} tickLine={false} />
+            <Tooltip content={<CustomTooltip />} />
             <Legend 
-                verticalAlign="top" 
-                height={36} 
-                iconType="circle"
-                wrapperStyle={{ paddingBottom: '20px' }}
-                onClick={toggleMetric}
-                formatter={(value, entry: any) => {
-                    const { dataKey } = entry;
-                    const isHidden = hiddenMetrics.includes(dataKey);
-                    const label = dataKey === 'conversions' ? 'Leads' : METRIC_CONFIG[dataKey]?.label || value;
-                    return (
-                        <span className={`font-medium ml-1 transition-colors cursor-pointer text-sm ${isHidden ? 'text-slate-300 line-through' : 'text-slate-600'}`}>
-                            {label}
-                        </span>
-                    );
-                }}
+              verticalAlign="top" 
+              align="right"
+              height={50} 
+              iconType="circle" 
+              onClick={toggleMetric} 
+              formatter={(val) => <span className="font-black uppercase tracking-widest text-[10px] ml-2 text-slate-500 hover:text-slate-900 transition-colors">{METRIC_CONFIG[val]?.label || val}</span>} 
             />
-            {!isEmpty && (chartType === 'line' ? (
-                <Area
-                    name={metric1}
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey={metric1}
-                    stroke={METRIC_CONFIG[metric1]?.color || '#8884d8'}
-                    fillOpacity={1}
-                    fill="url(#colorMetric1)"
-                    strokeWidth={2}
-                    dot={isSparse ? { r: 4, strokeWidth: 2, fill: '#fff' } : false}
-                    activeDot={{ r: 6, strokeWidth: 0 }}
-                    hide={hiddenMetrics.includes(metric1)}
-                    animationDuration={500}
-                />
+            
+            {chartType === 'bar' ? (
+                <Bar yAxisId="right" dataKey={metric2} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} radius={[8, 8, 0, 0]} hide={hiddenMetrics.includes(metric2)} barSize={36} />
             ) : (
-                <Bar
-                    name={metric1}
-                    yAxisId="left"
-                    dataKey={metric1}
-                    fill={METRIC_CONFIG[metric1]?.color || '#8884d8'}
-                    radius={[4, 4, 0, 0]}
-                    hide={hiddenMetrics.includes(metric1)}
-                    animationDuration={500}
-                    barSize={40}
-                />
-            ))}
-            {!isEmpty && metric1 !== metric2 && (
-                <Line
-                    name={metric2}
-                    yAxisId="right"
-                    type="monotone"
-                    dataKey={metric2}
-                    stroke={METRIC_CONFIG[metric2]?.color || '#82ca9d'}
-                    strokeWidth={2}
-                    dot={isSparse ? { r: 4, strokeWidth: 2, fill: '#fff' } : false}
-                    activeDot={{ r: 6, strokeWidth: 0 }}
-                    hide={hiddenMetrics.includes(metric2)}
-                    animationDuration={500}
-                />
+                <Area yAxisId="right" type="monotone" dataKey={metric2} stroke={METRIC_CONFIG[metric2]?.color || '#ec4899'} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} fillOpacity={0.1} strokeWidth={5} hide={hiddenMetrics.includes(metric2)} />
             )}
+            
+            <Line yAxisId="left" type="monotone" dataKey={metric1} stroke={METRIC_CONFIG[metric1]?.color || '#6366f1'} strokeWidth={6} dot={{ r: 5, strokeWidth: 4, fill: '#fff' }} activeDot={{ r: 9, strokeWidth: 4, fill: '#6366f1' }} hide={hiddenMetrics.includes(metric1)} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

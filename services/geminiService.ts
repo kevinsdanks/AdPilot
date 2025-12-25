@@ -1,241 +1,416 @@
 
-import { GoogleGenAI } from "@google/genai";
-import { AnalysisResult, DataRow, AdPilotJson, KeyMetrics, ScoreResult } from "../types";
+import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
+import { AnalysisResult, AdPilotJson, KeyMetrics, ScoreResult, AnalysisLanguage, Dataset, DimensionFile, DataRow, SimulationInputs, SimulationResult, GroundingSource, CreativeAuditResult, FocusGroupResult } from "../types";
 import { exportToCSV } from "../utils/csvHelper";
 import { calculateAggregatedMetrics } from "../utils/analyticsHelper";
 
-const formatMetricForPrompt = (val: number, type: 'currency' | 'percent' | 'count', currency: string) => {
-    if (type === 'count') return Math.round(val).toLocaleString();
-    if (type === 'percent') return `${val.toFixed(2)}%`;
-    return val.toLocaleString(undefined, { style: 'currency', currency });
+const extractGroundingSources = (response: GenerateContentResponse): GroundingSource[] => {
+  const sources: GroundingSource[] = [];
+  const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+  if (chunks) {
+    chunks.forEach((chunk: any) => {
+      if (chunk.web && chunk.web.uri) {
+        sources.push({
+          title: chunk.web.title || chunk.web.uri,
+          uri: chunk.web.uri
+        });
+      }
+    });
+  }
+  return sources;
 };
 
-/**
- * Robustly extracts the JSON string from potentially messy model output.
- * Handles markdown code blocks or stray conversational text.
- */
 const safeParseJson = (text: string): any => {
     try {
-        const startObj = text.indexOf('{');
-        const startArr = text.indexOf('[');
-        const start = (startObj !== -1 && (startArr === -1 || startObj < startArr)) ? startObj : startArr;
+        if (!text) return null;
+        // Attempt to find JSON blob if wrapped in markdown
+        const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/) || text.match(/```\n([\s\S]*?)\n```/) || text.match(/({[\s\S]*})/);
+        let cleaned = jsonMatch ? jsonMatch[1] || jsonMatch[0] : text;
+        
+        cleaned = cleaned.trim();
+        
+        // Basic cleanup for common LLM JSON errors
+        cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); // Remove trailing commas
+        cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, ""); // Remove control chars
 
-        const endObj = text.lastIndexOf('}');
-        const endArr = text.lastIndexOf(']');
-        const end = (endObj !== -1 && (endArr === -1 || endObj > endArr)) ? endObj : endArr;
-
-        if (start === -1 || end === -1) return JSON.parse(text);
-        const jsonStr = text.substring(start, end + 1);
-        return JSON.parse(jsonStr);
+        return JSON.parse(cleaned);
     } catch (e) {
-        console.error("Failed to parse JSON from response:", text);
-        throw e;
-  }
-};
-
-const getSystemInstruction = (currency: string, totals: KeyMetrics, score: ScoreResult) => {
-    const fSpend = formatMetricForPrompt(totals.spend, 'currency', currency);
-    const fCPA = formatMetricForPrompt(totals.cpa, 'currency', currency);
-    const fCPC = formatMetricForPrompt(totals.cpc, 'currency', currency);
-    const fCPM = formatMetricForPrompt(totals.cpm, 'currency', currency);
-    const fLeads = formatMetricForPrompt(totals.conversions, 'count', currency);
-    const fCTR = formatMetricForPrompt(totals.ctr, 'percent', currency);
-    const fROAS = totals.roas.toFixed(2);
-
-    return `
-You are AdPilot — a Senior Performance Marketing Strategist. 
-Analyze the provided CSV data and return an expert-level JSON analysis.
-
-=== PERSONA & TONE ===
-- Use professional, strategic language: "likely driven by", "concentration risk", "creative fatigue", "efficiency floor".
-- Your analysis must be authoritative yet data-grounded.
-- The currency for this dataset is **${currency}**.
-
-=== PERFORMANCE SCORE CONTEXT (DETERMINISTIC) ===
-The score of **${score.value}** (${score.rating}) was calculated using model **${score.version}**.
-Scoring Logic used by system:
-- Metrics used: ${score.explanation.inputs.join(', ')}
-- Weights: Efficiency 40%, Consistency 25%, Budget Waste 20%, Engagement 15%
-- Normalization: ${score.explanation.normalization}
-
-=== SINGLE SOURCE OF TRUTH (MANDATORY) ===
-Use these EXACT formatted strings. DO NOT invent metrics.
-
-OFFICIAL STRINGS:
-- Total Spend: ${fSpend}
-- Total Conversions (Leads): ${fLeads}
-- CPA (Cost Per Lead): ${fCPA}
-- ROAS: ${fROAS}
-- CTR: ${fCTR}
-- CPC: ${fCPC}
-- CPM: ${fCPM}
-
-=== INSIGHTS: PERFORMANCE DRIVERS (MANDATORY) ===
-You MUST return EXACTLY 3 objects in the 'whats_working' array. These are the Performance Drivers.
-Structure/Priority:
-1. Creative Performance Driver (Focus on assets, formats, or visual trends)
-2. Platform / Placement Performance Driver (Focus on strongest delivery channels)
-3. Efficiency / Cost Structure Driver (Focus on CPM/CPC floors or stability)
-
-Rules for each 'whats_working' item:
-- 'title': Exactly one of the labels above. You may dynamically enhance it (e.g. 'Creative & Audience Driver') only if a dual-signal is extremely strong.
-- 'description': 1-2 sentence expert explanation with EXPLICIT numeric evidence. NO Markdown (***, **, #). Use <b>tags</b> for key metrics, asset names, and terms.
-- 'metric': The most significant numeric signal (e.g., "2.03% CTR").
-- Content: Focus on explanation only. Never mention risks, recommendations, or actions here.
-
-=== OVERVIEW VERDICT (LOCKED) ===
-- 'detailed_verdict' drivers, risks, and actions must each have exactly 3 items.
-
-=== OUTPUT FORMAT (JSON ONLY) ===
-You must return only the JSON object. No other text.
-{
-  "primary_kpi": "CPA",
-  "key_metrics": { "spend": ${totals.spend}, "conversions": ${totals.conversions}, "cpa": ${totals.cpa}, "ctr": ${totals.ctr}, "cpc": ${totals.cpc}, "roas": ${totals.roas}, "impressions": ${totals.impressions}, "clicks": ${totals.clicks}, "revenue": ${totals.revenue} },
-  "score": ${JSON.stringify(score)},
-  "detailed_verdict": {
-    "headline": "...",
-    "summary": "...",
-    "drivers": ["Title: ...", "Title: ...", "Title: ..."],
-    "risks": ["Title: ...", "Title: ...", "Title: ..."],
-    "actions": [
-      { "step": "Specific task", "expected_impact": "Outcome" },
-      { "step": "Specific task", "expected_impact": "Outcome" },
-      { "step": "Specific task", "expected_impact": "Outcome" }
-    ],
-    "confidence": "High"
-  },
-  "next_best_action": { "action": "...", "expected_impact": "..." },
-  "summary": "...",
-  "whats_working": [], "whats_not_working": [], "breakdown_insights": [], "recommendations": []
-}
-`;
-};
-
-export const generateDataset = async (topic: string): Promise<DataRow[]> => {
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-pro-preview", 
-      contents: `Generate a realistic advertising dataset for "${topic}". 20 rows. Return as JSON array of objects.`,
-      config: { responseMimeType: "application/json" },
-    });
-    return safeParseJson(response.text || '[]');
-  } catch (error) {
-    console.error("Gemini Error:", error);
-    return mockGenerate(topic);
-  }
-};
-
-export const analyzeDataset = async (data: DataRow[], currency: string = 'USD'): Promise<AnalysisResult> => {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    try {
-        const { totals, score } = calculateAggregatedMetrics(data);
-        
-        const response = await ai.models.generateContent({
-            model: "gemini-3-pro-preview", 
-            contents: `Analyze data Snippet (CSV): ${exportToCSV(data.slice(0, 400))}`,
-            config: {
-                systemInstruction: getSystemInstruction(currency, totals, score),
-                responseMimeType: "application/json"
-            }
-        });
-
-        const structuredData = safeParseJson(response.text || "{}") as AdPilotJson;
-        
-        // Hard-enforce the deterministic score from the helper
-        structuredData.score = score;
-        structuredData.key_metrics = totals;
-
-        return { markdownReport: structuredData.detailed_verdict?.headline || "Analysis complete", structuredData };
-    } catch (error) {
-        console.error("Analysis Error:", error);
-        return mockAnalysis();
+        console.error("JSON Parse Error:", e);
+        // console.log("Failed Text:", text); // Commented out to avoid cluttering console with massive strings
+        return null;
     }
-}
+};
 
-export const askAdPilot = async (data: DataRow[], question: string, currency: string = 'USD'): Promise<string> => {
+export const analyzeAdCreative = async (base64Image: string, mimeType: string, context: { product: string; audience: string }, language: AnalysisLanguage): Promise<CreativeAuditResult> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  try {
-      const { totals } = calculateAggregatedMetrics(data);
-      const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview", 
-          contents: `Question: ${question}. Data Context: Total Spend ${totals.spend}, CPA ${totals.cpa}, Conversions ${totals.conversions}. Snippet: ${exportToCSV(data.slice(0, 200))}`,
-          config: {
-            systemInstruction: `You are AdPilot, a Senior Performance Marketing Strategist. 
-Analyze the data and answer the user question with professional, strategic depth.
-
-=== STRICT FORMATTING RULES (MANDATORY) ===
-1. NO Markdown: Do NOT use **bold**, _italic_, or ### headers.
-2. Use <b>tags</b>: Use standard HTML <b>tags</b> for ALL bold text.
-3. Bold specific elements: Section titles, Key risks, Conclusions, Numbers, metrics, and asset names MUST be <b>bolded</b>.
-4. Lists: Use numbered lists (1., 2., 3.) and bullet points using • (dot symbol), never asterisk.
-5. NO emojis. NO quotes wrapping text paragraphs.
-
-=== REQUIRED OUTPUT STRUCTURE ===
-Analysis Result
-[Intro paragraph with regular text, key takeaway <b>bolded inline</b>]
-
-1. <b>Section Title</b>
-[Paragraph explanation]
-• Supporting point with <b>metrics</b>
-• Supporting point with <b>metrics</b>
-• Risk: <b>Short bolded sentence</b>
-
-2. <b>Section Title</b>
-... (repeat pattern)
-
-Recommendation for Scaling
-<b>Action title</b>: explanation
-<b>Action title</b>: explanation
-<b>Action title</b>: explanation`
-          }
-      });
-      return response.text || "No response.";
-  } catch (error) {
-      console.error("Ask Error:", error);
-      return "I'm having trouble connecting to the analysis engine right now. Please try again later.";
-  }
-}
-
-const mockGenerate = (topic: string): DataRow[] => Array.from({ length: 15 }).map((_, i) => ({
-    date: `2023-10-${i + 1}`,
-    campaign_name: "Campaign " + (i % 2),
-    spend: Math.floor(Math.random() * 100),
-    conversions: Math.floor(Math.random() * 5),
-    impressions: 1000
-}));
-
-const mockAnalysis = (): AnalysisResult => {
-    const { totals, score } = calculateAggregatedMetrics(mockGenerate("Demo"));
-    return {
-        markdownReport: "Demo Analysis",
-        structuredData: {
-            primary_kpi: "CPA",
-            key_metrics: totals,
-            score: score,
-            detailed_verdict: {
-                headline: "Healthy volume with stable unit economics.",
-                summary: "The account is showing a CPA of $35.71, indicating strong creative resonance and efficient bidding.",
-                drivers: [
-                    "Lead Efficiency: A CPA of $35.71 ensures high-intent volume while maintaining a healthy efficiency floor.",
-                    "Creative Resonance: CTR performance supports consistent auction competitiveness.",
-                    "Bidding Stability: Deterministic bidding logic prevents cost volatility."
-                ],
-                risks: [
-                    "Creative Fatigue: High frequency levels may signal upcoming CPA inflation.",
-                    "Concentration Risk: High spend in single campaigns creates structural vulnerability.",
-                    "Attribution Gaps: Delayed reporting cycles might skew short-term scaling decisions."
-                ],
-                actions: [
-                    { "step": "Scale top campaign by 10% daily.", "expected_impact": "Increase lead volume by 5-8%." },
-                    { "step": "Launch creative A/B test.", "expected_impact": "Mitigate fatigue and suppress CPC." },
-                    { "step": "Review bid caps.", "expected_impact": "Protect efficiency during high-competition windows." }
-                ],
-                confidence: "High"
-            },
-            next_best_action: { action: "Scale Campaign 1", expected_impact: "+10% volume" },
-            summary: "Stable.",
-            whats_working: [], whats_not_working: [], breakdown_insights: [], recommendations: []
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: {
+      parts: [
+        { inlineData: { data: base64Image, mimeType } },
+        { text: `ROLE: Senior Creative Director. Analyze this ad: Product: ${context.product}, Audience: ${context.audience}. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.` }
+      ]
+    },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          score: { type: Type.NUMBER },
+          pillars: {
+            type: Type.OBJECT,
+            properties: {
+              stopping_power: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, feedback: { type: Type.STRING } } },
+              messaging_clarity: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, feedback: { type: Type.STRING } } },
+              brand_recall: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, feedback: { type: Type.STRING } } },
+              visual_hierarchy: { type: Type.OBJECT, properties: { score: { type: Type.NUMBER }, feedback: { type: Type.STRING } } }
+            }
+          },
+          key_observations: { type: Type.ARRAY, items: { type: Type.STRING } },
+          suggested_edits: { type: Type.ARRAY, items: { type: Type.STRING } },
+          accessibility_note: { type: Type.STRING }
         }
-    };
+      }
+    }
+  });
+  return safeParseJson(response.text || "{}");
+};
+
+export const generateFocusGroup = async (inputs: { product: string; offer: string; audience: string }, language: AnalysisLanguage): Promise<FocusGroupResult> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: `ROLE: Market Research Psychologist. Evaluate: Product: ${inputs.product}, Offer: ${inputs.offer}, Audience: ${inputs.audience}. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          personas: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                archetype: { type: Type.STRING },
+                reaction: { type: Type.STRING },
+                purchase_intent: { type: Type.NUMBER },
+                critical_concern: { type: Type.STRING },
+                positive_trigger: { type: Type.STRING }
+              }
+            }
+          },
+          aggregate_sentiment: { type: Type.STRING },
+          recommended_pivot: { type: Type.STRING }
+        }
+      }
+    }
+  });
+  return safeParseJson(response.text || "{}");
+};
+
+// Dataset Audit - Enforcing strict 3 cards per section and deep content
+export const analyzeDataset = async (dataset: Dataset, currency: string, language: AnalysisLanguage): Promise<AnalysisResult> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  // 1. Calculate Aggregated Metrics to force "Truth" into the prompt
+  const mainData = dataset.files[0]?.data || [];
+  const metrics = calculateAggregatedMetrics(mainData);
+  
+  const metricsContext = `
+  HARD DATA TRUTH (Do not hallucinate numbers different from these):
+  - Total Spend: ${metrics.totals.spend.toFixed(2)} ${currency}
+  - Total Conversions (Results/Leads): ${metrics.totals.conversions}
+  - Blended CPA: ${metrics.totals.cpa.toFixed(2)} ${currency}
+  - Blended ROAS: ${metrics.totals.roas.toFixed(2)}
+  - Blended CTR: ${metrics.totals.ctr.toFixed(2)}%
+  - Blended CPC: ${metrics.totals.cpc.toFixed(2)} ${currency}
+  `;
+
+  // 2. Prepare Raw Data Context - 500 rows for granular analysis
+  const rawDataContext = dataset.files.map(f => 
+    `FILE: ${f.name} (First 500 rows):\n${exportToCSV(f.data.slice(0, 500))}`
+  ).join('\n\n---\n\n');
+
+  // Define schema inline to decouple from other services
+  const auditPointSchema = {
+    type: Type.OBJECT,
+    properties: {
+      title: { type: Type.STRING },
+      text: { type: Type.STRING, description: "2-3 sentences explaining the insight from CSV data" },
+      impact: { type: Type.STRING, description: "Potential Gain/Improvement (e.g. Save 500€, +15 Leads)" },
+      confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+      expert_pillars: {
+        type: Type.OBJECT,
+        properties: {
+          observation: { type: Type.STRING, description: "Required. What does the CSV data show? 2-3 sentences." },
+          conclusion: { type: Type.STRING, description: "Required. What is the result? 2-3 sentences." },
+          justification: { type: Type.STRING, description: "Required. Why is this happening based on data? 2-3 sentences." },
+          recommendation: { type: Type.STRING, description: "Required. What to do next? 2-3 sentences." }
+        },
+        required: ["observation", "conclusion", "justification", "recommendation"]
+      },
+      deep_dive: {
+        type: Type.OBJECT,
+        properties: {
+          chart_config: {
+            type: Type.OBJECT,
+            properties: {
+              type: { type: Type.STRING, enum: ['bar_chart', 'line_chart', 'pie_chart', 'area_chart', 'funnel_chart', 'stacked_bar'] },
+              title: { type: Type.STRING },
+              y_axis_label: { type: Type.STRING },
+              x_axis_label: { type: Type.STRING },
+              value_format: { type: Type.STRING, enum: ['currency', 'percent', 'number', 'float'] },
+              unit_symbol: { type: Type.STRING, description: "Required symbol (e.g. €, %, x). MUST be populated." },
+              data: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: { label: { type: Type.STRING }, value: { type: Type.NUMBER }, color: { type: Type.STRING }, is_benchmark: { type: Type.BOOLEAN } }
+                }
+              }
+            },
+            required: ["type", "title", "y_axis_label", "value_format", "unit_symbol", "data"]
+          },
+          analysis_logic: {
+            type: Type.OBJECT,
+            properties: { 
+               headline: { type: Type.STRING }, 
+               formula: { type: Type.STRING }, 
+               logic: { type: Type.STRING, description: "Explain the calculation used on the CSV data." } 
+            },
+            required: ["headline", "formula", "logic"]
+          }
+        },
+        required: ["chart_config", "analysis_logic"]
+      }
+    },
+    required: ["title", "text", "impact", "confidence", "expert_pillars", "deep_dive"]
+  };
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview', 
+    contents: `ROLE: Senior Ad Performance Auditor. 
+TASK: Execute an audit based EXCLUSIVELY on the provided CSV data.
+
+INPUT DATA:
+${metricsContext}
+
+RAW CSV DATA:
+${rawDataContext}
+
+STRICT CONSTRAINTS:
+1. DATA SOURCE: FACTS MUST COME FROM CSV. Do not hallucinate campaigns not in the file.
+2. QUANTITY: GENERATE EXACTLY 3 ITEMS for 'performance_drivers', 3 for 'watch_outs_risks', and 3 for 'strategic_actions'. Total 9 cards.
+3. CONTENT DEPTH (CRITICAL): 
+   - The 'text' field on the card MUST be 2-3 sentences (approx 30-50 words) explaining the specific data pattern.
+   - The 'expert_pillars' (Observation, Conclusion, Justification, Recommendation) MUST each be 2-3 sentences deep.
+4. CHARTS:
+   - EVERY item must have a 'deep_dive.chart_config'.
+   - AXIS LABELS: You MUST provide specific 'x_axis_label', 'y_axis_label', and 'unit_symbol' (e.g. "€", "%") for every chart.
+   - UNIT SYMBOLS: Ensure 'unit_symbol' is always present (e.g. "%" for CTR, "€" for CPA).
+5. IMPACT: Calculate the POTENTIAL IMPROVEMENT. Do not just state current values. Use format like "Save €X", "+X Leads", "-X% CPA".
+6. ANALYSIS LOGIC: In 'analysis_logic', explain exactly which columns and rows were used to calculate the finding (e.g., "Filtered for Age=65+, Sum(Impressions) / Sum(Spend)").
+7. STRATEGIC ACTIONS: Ensure the 'strategic_actions' section is fully populated with actionable steps to improve performance based on the risks and drivers identified.
+8. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
+`,
+    config: {
+      maxOutputTokens: 8192,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          primary_kpi: { type: Type.STRING },
+          key_metrics: {
+            type: Type.OBJECT,
+            properties: {
+              spend: { type: Type.NUMBER }, revenue: { type: Type.NUMBER }, impressions: { type: Type.NUMBER }, clicks: { type: Type.NUMBER },
+              conversions: { type: Type.NUMBER }, ctr: { type: Type.NUMBER }, cpc: { type: Type.NUMBER }, cpa: { type: Type.NUMBER },
+              roas: { type: Type.NUMBER }, cpm: { type: Type.NUMBER }
+            }
+          },
+          score: {
+            type: Type.OBJECT,
+            properties: {
+              value: { type: Type.NUMBER },
+              rating: { type: Type.STRING, enum: ["Excellent", "Good", "Average", "Critical"] },
+              drivers: { type: Type.ARRAY, items: { type: Type.STRING } },
+              version: { type: Type.STRING },
+              confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+              breakdown: {
+                type: Type.OBJECT,
+                properties: { performance: { type: Type.NUMBER }, delivery: { type: Type.NUMBER }, creative: { type: Type.NUMBER }, structure: { type: Type.NUMBER } }
+              }
+            }
+          },
+          suggested_questions: { type: Type.ARRAY, items: { type: Type.STRING } },
+          detailed_verdict: {
+            type: Type.OBJECT,
+            properties: {
+              verdict: { type: Type.OBJECT, properties: { headline: { type: Type.STRING }, description: { type: Type.STRING } } },
+              grid: {
+                type: Type.OBJECT,
+                properties: {
+                  performance_drivers: { type: Type.ARRAY, items: auditPointSchema },
+                  watch_outs_risks: { type: Type.ARRAY, items: auditPointSchema },
+                  strategic_actions: { type: Type.ARRAY, items: auditPointSchema }
+                },
+                required: ["performance_drivers", "watch_outs_risks", "strategic_actions"]
+              }
+            },
+            required: ["verdict", "grid"]
+          }
+        },
+        required: ["primary_kpi", "key_metrics", "score", "detailed_verdict"]
+      }
+    }
+  });
+
+  const structuredData = safeParseJson(response.text || "{}");
+  const sources = extractGroundingSources(response);
+  if (structuredData) structuredData.sources = sources;
+
+  return {
+    markdownReport: response.text || '',
+    structuredData: structuredData as AdPilotJson
+  };
+};
+
+export const askAdPilot = async (dataset: Dataset, question: string, currency: string, language: AnalysisLanguage, deepThinking: boolean): Promise<{ text: string, sources: GroundingSource[] }> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const model = deepThinking ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+  
+  // Inject calculated metrics for Q&A as well to ensure accuracy
+  const mainData = dataset.files[0]?.data || [];
+  const metrics = calculateAggregatedMetrics(mainData);
+  const metricsContext = `
+  TRUTH METRICS:
+  Total Spend: ${metrics.totals.spend.toFixed(2)}
+  Total Conversions: ${metrics.totals.conversions}
+  CPA: ${metrics.totals.cpa.toFixed(2)}
+  ROAS: ${metrics.totals.roas.toFixed(2)}
+  `;
+
+  // Increased context for Q&A
+  const context = dataset.files.map(f => `FILE: ${f.name} DATA (First 300 rows):\n${exportToCSV(f.data.slice(0, 300))}`).join('\n\n---\n\n');
+  
+  const response = await ai.models.generateContent({
+    model,
+    contents: `ROLE: Senior Ad Scientist. Answer using the dataset.
+LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
+CONTEXT METRICS: ${metricsContext}
+DATASET: ${context}
+QUESTION: ${question}`,
+    config: { tools: [{ googleSearch: {} }] }
+  });
+  return { text: response.text || '', sources: extractGroundingSources(response) };
+};
+
+export const runAiSimulation = async (inputs: SimulationInputs, language: AnalysisLanguage): Promise<SimulationResult> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  // Detect Recruitment Context
+  const isRecruitment = inputs.product.toLowerCase().includes('job') || 
+                        inputs.product.toLowerCase().includes('hiring') || 
+                        inputs.product.toLowerCase().includes('recruitment') ||
+                        inputs.businessType === 'Lead Generation';
+
+  const prompt = `ROLE: Senior Media Strategy Architect (Consulting Grade).
+TASK: Create a 30-day client-ready acquisition strategy.
+INPUTS: Product: ${inputs.product}, Market: ${inputs.location}, Goal: ${inputs.goal}, Budget: ${inputs.budget} EUR.
+LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
+
+CRITICAL GUIDELINES:
+1. HEADLINE: Must follow format "30-Day [Topic] Plan — [Location]". Example: "30-Day Hiring Plan — Latvia" or "30-Day Lead Acquisition Plan — Riga". NO "Sprint" or internal jargon.
+2. MARKET INTEL: 
+   - 'search_demand_rating' must match description.
+   - 'search_demand' text MUST include estimated volume range (e.g., "8k-15k monthly searches").
+   - "Interpretation" field is the "So What?".
+   - "Implication" field is the tactical action.
+3. BENCHMARKS:
+   - ${isRecruitment ? "Use 'Cost per Application' (CPA) and 'Qualified Application Rate'." : "Use CPA and Lead CVR."}
+   - Contextualize benchmarks (e.g., "Latvia Recruitment Auction Median").
+4. STRATEGY:
+   - 'dynamic_adjustment_scenario' MUST be a 2-step logic: "Step 1: Fix Search negatives. Step 2: If still high, shift to Retargeting."
+   - 'risk_mitigation': Use specific, non-discriminatory gates (e.g., "Qualification Questions", "Location Gate").
+   - 'funnel_split_justification': Must specify budget math (e.g., "€${inputs.budget} total. 60% Meta for volume, 40% Search for intent.").
+5. METRICS:
+   - ${isRecruitment ? "Replace 'Conversions' with 'Applications' everywhere." : "Use 'Conversions' or 'Leads'."}
+   - If ROAS is not applicable (like recruitment), use "Quality Score" or "Interview Rate" instead.
+6. CREATIVE:
+   - 'value_props': Must be candidate-centric if hiring (e.g. "Net salary", "Shift flexibility"), not employer-centric.
+   - 'anti_messaging': Must include "Bait-and-switch" warnings.
+   - 'visual_direction' -> Rename to "Creative Direction" in output text if possible.
+   - Guardrails: PROVIDE AT LEAST 5 ITEMS.
+7. ROADMAP:
+   - W2/W3 metrics must be specific (e.g. "Form Completion Rate", not generic "Bounce Rate").
+   - W4 must include "CRM Feedback Loop".
+8. BREVITY: Keep strings dense and under 15 words where possible.
+9. VALID JSON ONLY.`;
+  
+  const response = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: prompt,
+    config: {
+      maxOutputTokens: 8192,
+      tools: [{ googleSearch: {} }],
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          executive_summary: {
+            type: Type.OBJECT,
+            properties: {
+              headline: { type: Type.STRING, description: "Professional strategy title" },
+              summary: { type: Type.STRING },
+              strategic_verdict: { type: Type.STRING },
+              expected_outcome_summary: { type: Type.STRING },
+              recommended_mix: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { channel: { type: Type.STRING }, priority: { type: Type.NUMBER }, role: { type: Type.STRING } } } }
+            }
+          },
+          market_intelligence: {
+            type: Type.OBJECT,
+            properties: {
+              search_demand: { type: Type.STRING },
+              search_demand_rating: { type: Type.STRING, enum: ["Low", "Medium", "High"] },
+              search_intent_split: { type: Type.OBJECT, properties: { high: { type: Type.NUMBER }, mid: { type: Type.NUMBER }, info: { type: Type.NUMBER } } },
+              interpretation: { type: Type.STRING, description: "The 'So What?' insight" },
+              implication: { type: Type.STRING, description: "The tactical implication" },
+              benchmarks: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, value: { type: Type.STRING }, context: { type: Type.STRING } } } }
+            }
+          },
+          strategic_approach: {
+            type: Type.OBJECT,
+            properties: { logic: { type: Type.STRING }, funnel_split_justification: { type: Type.STRING }, funnel_balance: { type: Type.STRING }, confidence_score: { type: Type.STRING }, dynamic_adjustment_scenario: { type: Type.STRING }, risk_mitigation: { type: Type.STRING } }
+          },
+          channel_breakdown: {
+            type: Type.ARRAY,
+            items: { type: Type.OBJECT, properties: { channel_name: { type: Type.STRING }, budget_share: { type: Type.STRING }, strategy: { type: Type.STRING }, primary_kpi: { type: Type.STRING }, key_risk: { type: Type.STRING }, success_30d: { type: Type.STRING } } }
+          },
+          forecast: {
+            type: Type.OBJECT,
+            properties: {
+              conservative: { type: Type.OBJECT, properties: { conversions: { type: Type.STRING }, cpa: { type: Type.STRING }, roas: { type: Type.STRING }, logic: { type: Type.STRING }, driver: { type: Type.STRING } } },
+              expected: { type: Type.OBJECT, properties: { conversions: { type: Type.STRING }, cpa: { type: Type.STRING }, roas: { type: Type.STRING }, logic: { type: Type.STRING }, driver: { type: Type.STRING } } },
+              optimistic: { type: Type.OBJECT, properties: { conversions: { type: Type.STRING }, cpa: { type: Type.STRING }, roas: { type: Type.STRING }, logic: { type: Type.STRING }, driver: { type: Type.STRING } } }
+            }
+          },
+          creative_strategy: {
+            type: Type.OBJECT,
+            properties: { value_props: { type: Type.ARRAY, items: { type: Type.STRING } }, messaging_by_funnel: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { stage: { type: Type.STRING }, angle: { type: Type.STRING } } } }, anti_messaging: { type: Type.ARRAY, items: { type: Type.STRING } }, visual_direction: { type: Type.STRING } }
+          },
+          roadmap: {
+            type: Type.ARRAY,
+            items: { type: Type.OBJECT, properties: { week: { type: Type.NUMBER }, title: { type: Type.STRING }, tasks: { type: Type.ARRAY, items: { type: Type.STRING } }, success_criteria: { type: Type.STRING }, decision_gate: { type: Type.STRING } } }
+          },
+          syntheticData: {
+            type: Type.ARRAY,
+            items: { type: Type.OBJECT, properties: { "Date": { type: Type.STRING }, "Spend": { type: Type.NUMBER }, "Conversions": { type: Type.NUMBER } } }
+          }
+        },
+        required: ["executive_summary", "market_intelligence", "strategic_approach", "channel_breakdown", "forecast", "creative_strategy", "roadmap", "syntheticData"]
+      }
+    }
+  });
+  return { ...safeParseJson(response.text || "{}"), sources: extractGroundingSources(response) };
 };

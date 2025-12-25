@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo } from 'react';
 import { DataRow } from '../types';
 import { ArrowUpDown, ArrowUp, ArrowDown, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -114,13 +115,13 @@ export const DataTable: React.FC<DataTableProps> = ({ data }) => {
 
       <div className="overflow-auto flex-1 relative">
           <table className="w-full text-xs text-left text-slate-600">
-            <thead className="text-xs font-semibold text-slate-700 uppercase bg-slate-50 border-b border-slate-200 sticky top-0 z-10 shadow-sm">
+            <thead className="text-xs font-black text-white uppercase bg-slate-900 border-b-2 border-indigo-500 sticky top-0 z-10 shadow-lg">
               <tr>
                 {columns.map((col) => (
                   <th 
                     key={col} 
                     scope="col" 
-                    className="px-3 py-3 whitespace-nowrap cursor-pointer hover:bg-slate-100 transition-colors select-none group"
+                    className="px-4 py-4 whitespace-nowrap cursor-pointer hover:bg-slate-800 transition-colors select-none group tracking-widest"
                     onClick={() => requestSort(col)}
                   >
                     <div className="flex items-center gap-1">

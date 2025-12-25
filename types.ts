@@ -5,34 +5,24 @@ export enum AppMode {
   LANDING = 'LANDING',
   UPLOAD = 'UPLOAD',
   GENERATE = 'GENERATE',
-  DASHBOARD = 'DASHBOARD'
+  SIMULATION_RESULT = 'SIMULATION_RESULT',
+  DASHBOARD = 'DASHBOARD',
+  META_SELECT = 'META_SELECT',
+  CREATIVE_STUDIO = 'CREATIVE_STUDIO'
 }
 
-export interface InsightItem {
+export type AnalysisLanguage = 'ENG' | 'LV';
+
+export interface GroundingSource {
   title: string;
-  description: string;
-  metric: string;
+  uri: string;
 }
 
-export interface ScalingPlan {
-  suggested_increase: string;
-  watch_metrics: string[];
-  stop_condition: string;
-}
-
-export interface RecommendationItem {
-  title: string;
-  description: string;
-  type: 'quick_win' | 'strategic';
-  impact?: 'High' | 'Medium' | 'Low';
-  scaling_plan?: ScalingPlan;
-}
-
-export interface BreakdownInsight {
-  dimension: string; 
-  insight: string;   
-  segment_data: string; 
-  action: string;    
+export interface MetaAdAccount {
+  id: string;
+  name: string;
+  currency: string;
+  account_id: string;
 }
 
 export interface KeyMetrics {
@@ -64,42 +54,101 @@ export interface ScoreResult {
     drivers: string[];
     version: string;
     explanation: ScoreExplanation;
+    confidence: 'High' | 'Medium' | 'Low';
+    logic_description?: string;
     breakdown: {
-        efficiency: number;
-        consistency: number;
-        waste: number;
-        engagement: number;
+        performance: number;
+        delivery: number;
+        creative: number;
+        structure: number;
     };
 }
 
-export interface StrategicAction {
-  step: string;
-  expected_impact: string;
+export interface CreativeAuditResult {
+  score: number;
+  pillars: {
+    stopping_power: { score: number; feedback: string };
+    messaging_clarity: { score: number; feedback: string };
+    brand_recall: { score: number; feedback: string };
+    visual_hierarchy: { score: number; feedback: string };
+  };
+  key_observations: string[];
+  suggested_edits: string[];
+  accessibility_note: string;
 }
 
-export interface DetailedVerdict {
-  headline: string;
-  summary: string;
-  drivers: string[]; 
-  risks: string[];   
-  actions: StrategicAction[]; 
+export interface FocusGroupPersona {
+  name: string;
+  archetype: string;
+  reaction: string;
+  purchase_intent: number; // 1-10
+  critical_concern: string;
+  positive_trigger: string;
+}
+
+export interface FocusGroupResult {
+  personas: FocusGroupPersona[];
+  aggregate_sentiment: string;
+  recommended_pivot?: string;
+}
+
+export interface ExpertAnalysisPillars {
+  observation: string;
+  conclusion: string;
+  justification: string;
+  recommendation: string;
+}
+
+export interface DeepDiveDetail {
+  chart_config: {
+    type: 'bar_chart' | 'line_chart' | 'pie_chart' | 'area_chart' | 'funnel_chart' | 'stacked_bar';
+    title: string;
+    y_axis_label: string;
+    x_axis_label?: string;
+    value_format: 'currency' | 'percent' | 'number' | 'float';
+    unit_symbol: string;
+    data: { label: string; value: number; color?: string; is_benchmark?: boolean }[];
+  };
+  analysis_text: string;
+  expert_pillars: ExpertAnalysisPillars;
+  analysis_logic: {
+    headline: string;
+    formula: string;
+    logic: string;
+  };
+}
+
+export interface AuditPoint {
+  title: string;
+  text: string;
+  impact?: string;
   confidence: 'High' | 'Medium' | 'Low';
+  expert_pillars: ExpertAnalysisPillars;
+  deep_dive: DeepDiveDetail;
+}
+
+export interface DeepDiveGrid {
+  performance_drivers: AuditPoint[];
+  watch_outs_risks: AuditPoint[];
+  strategic_actions: AuditPoint[];
+}
+
+export interface ExpertVerdict {
+  headline: string;
+  description: string;
 }
 
 export interface AdPilotJson {
   primary_kpi: string;
   key_metrics: KeyMetrics;
   score: ScoreResult;
-  detailed_verdict: DetailedVerdict;
-  next_best_action: {
-    action: string;
-    expected_impact: string;
+  suggested_questions: string[];
+  detailed_verdict: {
+    verdict: ExpertVerdict;
+    grid: DeepDiveGrid;
+    confidence: 'High' | 'Medium' | 'Low';
   };
-  summary: string;
-  whats_working: InsightItem[];
-  whats_not_working: InsightItem[];
-  breakdown_insights: BreakdownInsight[];
-  recommendations: RecommendationItem[];
+  sources?: GroundingSource[];
 }
 
 export interface AnalysisResult {
@@ -107,9 +156,87 @@ export interface AnalysisResult {
   structuredData: AdPilotJson | null;
 }
 
-export interface Dataset {
+export interface DimensionFile {
+  id: string;
   name: string;
   data: DataRow[];
-  columns: string[];
-  summaryRowsExcluded?: number;
+  type: 'DAILY' | 'DEMOGRAPHIC' | 'PLACEMENT' | 'CREATIVE' | 'UNKNOWN';
+}
+
+export interface Dataset {
+  name: string;
+  files: DimensionFile[];
+  source: 'CSV' | 'META' | 'GEN';
+}
+
+export interface SimulationInputs {
+  product: string;
+  location: string;
+  businessType: string;
+  goal: string;
+  urgency: string;
+  customerProfile: string;
+  offer: string;
+  avgPrice: string;
+  budget: number;
+  expectedResults: string;
+  experience: string;
+}
+
+export interface SimulationResult {
+  executive_summary: {
+    headline: string;
+    summary: string;
+    strategic_verdict: string;
+    expected_outcome_summary: string;
+    recommended_mix: { channel: string; priority: number; role: string }[];
+  };
+  market_intelligence: {
+    search_demand: string;
+    search_demand_rating: 'Low' | 'Medium' | 'High';
+    search_intent_split: { high: number; mid: number; info: number };
+    seasonality: string;
+    competition_level: string;
+    interpretation: string;
+    implication: string;
+    benchmarks: { name: string; value: string; context: string }[];
+    confidence_indicator: string;
+  };
+  strategic_approach: {
+    logic: string;
+    funnel_split_justification: string;
+    dynamic_adjustment_scenario: string;
+    risk_mitigation: string;
+    funnel_balance: string;
+    confidence_score: string;
+  };
+  channel_breakdown: {
+    channel_name: string;
+    budget_share: string;
+    role_in_funnel: string;
+    strategy: string;
+    primary_kpi: string;
+    key_risk: string;
+    success_30d: string;
+  }[];
+  forecast: {
+    conservative: { conversions: string; cpa: string; roas: string; logic: string; driver: string };
+    expected: { conversions: string; cpa: string; roas: string; logic: string; driver: string };
+    optimistic: { conversions: string; cpa: string; roas: string; logic: string; driver: string };
+  };
+  creative_strategy: {
+    value_props: string[];
+    messaging_by_funnel: { stage: string; angle: string; platform_context: string }[];
+    anti_messaging: string[];
+    visual_direction: string;
+  };
+  roadmap: { week: number; title: string; tasks: string[]; success_criteria: string; decision_gate?: string }[];
+  syntheticData: DataRow[];
+  sources?: GroundingSource[];
+}
+
+export interface InsightObject {
+  type: 'info' | 'success' | 'warning' | 'error' | string;
+  title: string;
+  text: string;
 }
