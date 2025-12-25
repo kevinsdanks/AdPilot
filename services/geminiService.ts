@@ -31,12 +31,20 @@ const safeParseJson = (text: string): any => {
         
         // Basic cleanup for common LLM JSON errors
         cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); // Remove trailing commas
-        cleaned = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, ""); // Remove control chars
+        // Only remove non-printable control characters that are NOT whitespace (like newlines/tabs are okay usually, but JSON.parse expects escaped)
+        // We will remove typical 'bad' control chars but be careful with newlines if they are actual formatting
+        cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
 
         return JSON.parse(cleaned);
     } catch (e) {
         console.error("JSON Parse Error:", e);
-        // console.log("Failed Text:", text); // Commented out to avoid cluttering console with massive strings
+        // Fallback: If strict parse fails, try to extract the largest object looking string and parse that
+        try {
+            const fallbackMatch = text.match(/{[\s\S]*}/);
+            if (fallbackMatch && fallbackMatch[0] !== text) {
+                 return JSON.parse(fallbackMatch[0]);
+            }
+        } catch (e2) {}
         return null;
     }
 };
@@ -127,7 +135,7 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
   - Blended CPC: ${metrics.totals.cpc.toFixed(2)} ${currency}
   `;
 
-  // 2. Prepare Raw Data Context - 500 rows for granular analysis
+  // 2. Prepare Raw Data Context - REVERTED TO 500 ROWS LIMIT
   const rawDataContext = dataset.files.map(f => 
     `FILE: ${f.name} (First 500 rows):\n${exportToCSV(f.data.slice(0, 500))}`
   ).join('\n\n---\n\n');
@@ -291,8 +299,8 @@ export const askAdPilot = async (dataset: Dataset, question: string, currency: s
   ROAS: ${metrics.totals.roas.toFixed(2)}
   `;
 
-  // Increased context for Q&A
-  const context = dataset.files.map(f => `FILE: ${f.name} DATA (First 300 rows):\n${exportToCSV(f.data.slice(0, 300))}`).join('\n\n---\n\n');
+  // Increased context for Q&A - REVERTED TO 300 ROWS
+  const context = dataset.files.map(f => `FILE: ${f.name} (First 300 rows):\n${exportToCSV(f.data.slice(0, 300))}`).join('\n\n---\n\n');
   
   const response = await ai.models.generateContent({
     model,
