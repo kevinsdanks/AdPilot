@@ -21,30 +21,49 @@ const extractGroundingSources = (response: GenerateContentResponse): GroundingSo
 };
 
 const safeParseJson = (text: string): any => {
-    try {
-        if (!text) return null;
-        // Attempt to find JSON blob if wrapped in markdown
-        const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/) || text.match(/```\n([\s\S]*?)\n```/) || text.match(/({[\s\S]*})/);
-        let cleaned = jsonMatch ? jsonMatch[1] || jsonMatch[0] : text;
-        
-        cleaned = cleaned.trim();
-        
-        // Basic cleanup for common LLM JSON errors
-        cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); // Remove trailing commas
-        // Only remove non-printable control characters that are NOT whitespace (like newlines/tabs are okay usually, but JSON.parse expects escaped)
-        // We will remove typical 'bad' control chars but be careful with newlines if they are actual formatting
-        cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
+    if (!text) return null;
 
+    // 1. Try parsing as-is (Most reliable for strict JSON mode)
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        // Continue to cleanup strategies
+    }
+
+    // 2. Strip Markdown (```json ... ```)
+    let cleaned = text;
+    const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (markdownMatch) {
+        cleaned = markdownMatch[1];
+    } else {
+        // Fallback: Attempt to find the outermost JSON object
+        const firstBrace = text.indexOf('{');
+        const lastBrace = text.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            cleaned = text.substring(firstBrace, lastBrace + 1);
+        }
+    }
+    
+    // 3. Try parsing extracted content
+    try {
         return JSON.parse(cleaned);
     } catch (e) {
-        console.error("JSON Parse Error:", e);
-        // Fallback: If strict parse fails, try to extract the largest object looking string and parse that
-        try {
-            const fallbackMatch = text.match(/{[\s\S]*}/);
-            if (fallbackMatch && fallbackMatch[0] !== text) {
-                 return JSON.parse(fallbackMatch[0]);
-            }
-        } catch (e2) {}
+        // Continue to aggressive cleanup
+    }
+    
+    // 4. Aggressive cleanup for common LLM syntax errors
+    try {
+        // Remove trailing commas before closing braces/brackets
+        // Note: This regex is imperfect and might match inside strings, but it's a last resort
+        cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); 
+        
+        // Remove non-printable control characters (excluding standard whitespace)
+        cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
+        
+        return JSON.parse(cleaned);
+    } catch (e) {
+        console.error("JSON Parse Failed Final Attempt:", e);
+        // Fallback: return null to prevent app crash, UI should handle null structuredData
         return null;
     }
 };

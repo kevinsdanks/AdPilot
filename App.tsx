@@ -57,7 +57,9 @@ const App = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [language, setLanguage] = useState<AnalysisLanguage>('ENG');
-  const [hasApiKey, setHasApiKey] = useState<boolean>(false);
+  
+  // Initialize hasApiKey to true if process.env.API_KEY is present (Production/Vercel)
+  const [hasApiKey, setHasApiKey] = useState<boolean>(!!process.env.API_KEY);
 
   // Simulation states
   const [simInputs, setSimInputs] = useState<SimulationInputs | null>(null);
@@ -76,9 +78,15 @@ const App = () => {
 
   useEffect(() => {
     const checkKey = async () => {
-      if (window.aistudio) {
-        const selected = await window.aistudio.hasSelectedApiKey();
-        setHasApiKey(selected);
+      // Cast window to any to avoid TS build errors
+      const aiStudio = (window as any).aistudio;
+      if (aiStudio) {
+        const selected = await aiStudio.hasSelectedApiKey();
+        // Only update state if we don't already have an Env key. 
+        // This prevents the overlay from disabling access in production where env key exists but aiStudio object might imply 'false'.
+        if (!process.env.API_KEY) {
+          setHasApiKey(selected);
+        }
       }
     };
     checkKey();
@@ -103,8 +111,9 @@ const App = () => {
   }, [isSimulating]);
 
   const handleSelectKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
+    const aiStudio = (window as any).aistudio;
+    if (aiStudio) {
+      await aiStudio.openSelectKey();
       setHasApiKey(true);
     }
   };
