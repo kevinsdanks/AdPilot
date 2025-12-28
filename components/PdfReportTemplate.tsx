@@ -1,8 +1,8 @@
 
 import React from 'react';
 import { AnalysisResult, Dataset, KeyMetrics, AuditPoint } from '../types';
-import { ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, Label } from 'recharts';
-import { Rocket, AlertTriangle, CheckCircle2, TrendingUp, ShieldAlert, ListChecks, ArrowRight, Layout, Info, Star, Calculator, Zap } from 'lucide-react';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, LineChart, Line, Legend } from 'recharts';
+import { Rocket, TrendingUp, ShieldAlert, ListChecks, Layout } from 'lucide-react';
 
 interface PdfReportTemplateProps {
   dataset: Dataset;
@@ -11,112 +11,180 @@ interface PdfReportTemplateProps {
   currencyCode: string;
 }
 
-const colors = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#3b82f6", "#8b5cf6", "#ec4899"];
+const colors = ["#4f46e5", "#10b981", "#f59e0b", "#ef4444", "#3b82f6", "#8b5cf6", "#ec4899"];
 
-// A4 Fixed Page Component (794px width @ 96dpi approx)
-const Page: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className = "" }) => (
-    <div className={`pdf-page w-[794px] min-h-[1123px] bg-white p-12 relative flex flex-col ${className}`}>
-        {children}
-        <div className="mt-auto pt-6 border-t border-slate-100 flex justify-between items-end text-[9px] text-slate-400 font-bold uppercase tracking-widest">
-            <span>AdPilot Audit Intelligence</span>
-            <span>Confidential Report</span>
+// --- CONSTANTS ---
+const PAGE_WIDTH = 794; // A4 Width in px at 96 DPI
+const PAGE_HEIGHT = 1123; // A4 Height in px
+const CHART_HEIGHT = 300;
+
+// --- SUB-COMPONENTS ---
+
+const Page: React.FC<{ children: React.ReactNode; pageNumber: number }> = ({ children, pageNumber }) => (
+    <div 
+        className="pdf-page bg-white relative flex flex-col"
+        style={{ width: `${PAGE_WIDTH}px`, minHeight: `${PAGE_HEIGHT}px`, padding: '40px 48px' }}
+    >
+        <div className="flex-1">
+            {children}
+        </div>
+        
+        {/* Footer */}
+        <div className="mt-auto pt-4 border-t border-slate-200 flex justify-between items-center">
+            <div className="flex items-center gap-2 text-slate-400">
+                <Rocket className="w-3 h-3" />
+                <span className="text-[9px] font-black uppercase tracking-widest">AdPilot Intelligence Audit</span>
+            </div>
+            <div className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">
+                Confidential • Page {pageNumber}
+            </div>
         </div>
     </div>
 );
 
-// Simplified Chart for Print (Fixed Size, No Animation)
+const SectionTitle: React.FC<{ title: string; icon: any; color: string; desc: string }> = ({ title, icon: Icon, color, desc }) => (
+    <div className="mb-6 border-b-2 border-slate-100 pb-4" style={{ pageBreakBefore: 'always' }}>
+        <div className="flex items-center gap-3 mb-2">
+            <div className={`p-2.5 rounded-xl ${color} text-white shadow-sm`}>
+                <Icon className="w-5 h-5" />
+            </div>
+            <h2 className="text-2xl font-black text-slate-900 uppercase tracking-tight">{title}</h2>
+        </div>
+        <p className="text-xs font-medium text-slate-500 pl-[3rem]">{desc}</p>
+    </div>
+);
+
 const PrintChart: React.FC<{ config: any; defaultCurrency: string }> = ({ config, defaultCurrency }) => {
   if (!config) return null;
 
   const formatVal = (val: number) => {
-    if (config.unit_symbol) return `${val.toLocaleString()}${config.unit_symbol}`;
+    // 1. Currency
     if (config.value_format === 'currency') return `${val.toLocaleString()} ${defaultCurrency}`;
-    if (config.value_format === 'percent') return `${val.toFixed(2)}%`;
+    
+    // 2. Percent
+    if (config.value_format === 'percent') return `${val.toFixed(1)}%`;
+    
+    // 3. ROAS or Frequency (Unit Symbol is 'x')
+    if (config.unit_symbol === 'x') return `${val.toFixed(2)}x`;
+    
+    // 4. Large Numbers (> 1000) -> Use 'k' notation
+    if (val >= 1000) return `${(val / 1000).toFixed(1)}k`;
+    
+    // 5. Default
     return val.toLocaleString();
   };
 
   return (
-    <div className="w-full h-[250px] border border-slate-200 rounded-xl p-4 bg-white mb-4">
-        <div className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">{config.title}</div>
-        <ResponsiveContainer width="100%" height="100%">
+    <div className="w-full bg-white border border-slate-100 rounded-xl p-4 mb-2" style={{ height: `${CHART_HEIGHT}px` }}>
+        <div className="text-[9px] font-black text-slate-400 uppercase mb-2 tracking-widest text-center">{config.title}</div>
         {config.type === 'pie_chart' ? (
-          <PieChart>
-            <Pie data={config.data || []} cx="50%" cy="50%" innerRadius={35} outerRadius={70} paddingAngle={2} dataKey="value" nameKey="label" isAnimationActive={false}>
+          <PieChart width={650} height={240}>
+            <Pie data={config.data || []} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={2} dataKey="value" nameKey="label" isAnimationActive={false}>
               {(config.data || []).map((entry: any, index: number) => <Cell key={`cell-${index}`} fill={entry.color || colors[index % colors.length]} />)}
             </Pie>
-            <Label value={config.title} position="center" style={{ fontSize: '10px', fontWeight: 'bold' }} />
+            <Legend verticalAlign="middle" align="right" layout="vertical" iconType="circle" wrapperStyle={{ fontSize: '10px', fontFamily: 'sans-serif' }} />
           </PieChart>
         ) : config.type === 'bar_chart' || config.type === 'stacked_bar' ? (
-          <BarChart data={config.data || []} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+          <BarChart width={650} height={240} data={config.data || []} margin={{ top: 10, right: 30, left: 20, bottom: 20 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b', fontWeight: 700 }} interval={0} angle={-15} textAnchor="end" />
-            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b', fontWeight: 700 }} tickFormatter={formatVal} />
+            <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b', fontWeight: 600 }} interval={0} angle={-10} textAnchor="end" />
+            <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b', fontWeight: 600 }} tickFormatter={formatVal} />
             <Bar dataKey="value" radius={[4, 4, 0, 0]} isAnimationActive={false}>
               {(config.data || []).map((entry: any, index: number) => <Cell key={`cell-${index}`} fill={entry.color || colors[0]} />)}
             </Bar>
           </BarChart>
         ) : (
-          <LineChart data={config.data || []} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+          <LineChart width={650} height={240} data={config.data || []} margin={{ top: 10, right: 30, left: 20, bottom: 20 }}>
              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-             <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b', fontWeight: 700 }} />
-             <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#64748b', fontWeight: 700 }} tickFormatter={formatVal} />
-             <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={3} dot={{ r: 3, fill: '#6366f1' }} isAnimationActive={false} />
+             <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b', fontWeight: 600 }} />
+             <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b', fontWeight: 600 }} tickFormatter={formatVal} />
+             <Line type="monotone" dataKey="value" stroke="#4f46e5" strokeWidth={3} dot={{ r: 4, fill: '#4f46e5' }} isAnimationActive={false} />
           </LineChart>
         )}
-      </ResponsiveContainer>
     </div>
   );
 };
 
-// Compact "Deep Dive" Card specifically for Print Layout
-const DeepDivePrintCard: React.FC<{ item: AuditPoint; currency: string }> = ({ item, currency }) => (
-    <div className="mb-8 pb-8 border-b border-slate-100 last:border-0 break-inside-avoid">
-        {/* Header */}
-        <div className="flex justify-between items-start mb-3">
-             <div className="flex items-center gap-3">
-                <div className={`w-2 h-2 rounded-full ${item.confidence === 'High' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                <h3 className="text-xl font-black text-slate-900 leading-tight">{item.title}</h3>
-             </div>
-             <div className="px-3 py-1 bg-indigo-50 rounded-lg text-[9px] font-black text-indigo-700 uppercase tracking-widest border border-indigo-100">
-                Impact: {item.impact}
-             </div>
-        </div>
+const PrintCard: React.FC<{ item: AuditPoint; currency: string }> = ({ item, currency }) => {
+    return (
+        <div 
+            className="border border-slate-200 rounded-[1rem] overflow-hidden mb-6 bg-white shadow-sm"
+            style={{ 
+                breakInside: 'avoid', 
+                pageBreakInside: 'avoid', 
+                display: 'table', 
+                width: '100%',
+                marginBottom: '1.5rem'
+            }}
+        >
+            {/* Compact Header */}
+            <div className="bg-slate-50 px-5 py-4 border-b border-slate-200 flex justify-between items-center">
+                <div className="flex-1 pr-4">
+                    <div className="flex items-center gap-2 mb-1.5">
+                        <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest text-white ${item.confidence === 'High' ? 'bg-emerald-500' : item.confidence === 'Medium' ? 'bg-amber-500' : 'bg-slate-400'}`}>
+                            {item.confidence} Confidence
+                        </span>
+                    </div>
+                    <h3 className="text-lg font-black text-slate-900 leading-tight">{item.title}</h3>
+                </div>
+                
+                {/* Huge Impact Metric */}
+                <div className="text-right">
+                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-0.5">Projected Impact</span>
+                    <span className="text-2xl font-black text-indigo-600 block leading-none">{item.impact}</span>
+                </div>
+            </div>
 
-        {/* Core Text */}
-        <p className="text-sm text-slate-600 font-medium leading-relaxed mb-6 pl-5 border-l-2 border-slate-200">{item.text}</p>
-        
-        {/* Visuals & Logic */}
-        <div className="grid grid-cols-2 gap-6 mb-6">
-            <PrintChart config={item.deep_dive?.chart_config} defaultCurrency={currency} />
-            <div className="space-y-4">
-                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                    <span className="text-[9px] font-black text-slate-400 uppercase block mb-1">Analysis Logic</span>
-                    <p className="text-[10px] font-mono text-indigo-600 leading-tight break-words">{item.deep_dive?.analysis_logic?.formula || "N/A"}</p>
-                 </div>
-                 <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-                    <span className="text-[9px] font-black text-slate-400 uppercase block mb-1">Key Insight</span>
-                    <p className="text-[10px] font-bold text-slate-800 leading-relaxed">{item.expert_pillars.observation}</p>
-                 </div>
+            {/* Compact Body */}
+            <div className="p-5">
+                <p className="text-[10px] font-medium text-slate-600 leading-relaxed mb-5 text-justify">{item.text}</p>
+                
+                {/* 2x2 Grid for Pillars - Replaced Icons with Shapes to prevent PDF ghosting */}
+                <div className="grid grid-cols-2 gap-4 mt-6 bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                    <div className="flex flex-col">
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Observation
+                        </span>
+                        <p className="text-[10px] font-bold text-slate-700 leading-relaxed">{item.expert_pillars.observation}</p>
+                    </div>
+                    
+                    <div className="flex flex-col">
+                         <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Conclusion
+                         </span>
+                         <p className="text-[10px] font-bold text-slate-700 leading-relaxed">{item.expert_pillars.conclusion}</p>
+                    </div>
+
+                    <div className="flex flex-col">
+                         <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                             <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Justification
+                         </span>
+                         <p className="text-[10px] font-bold text-slate-700 leading-relaxed">{item.expert_pillars.justification}</p>
+                    </div>
+
+                    <div className="flex flex-col">
+                        <span className="text-[9px] font-black text-indigo-500 uppercase tracking-widest mb-1 flex items-center gap-1.5">
+                             <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span> Recommendation
+                        </span>
+                        <p className="text-[10px] font-bold text-indigo-900 leading-relaxed">{item.expert_pillars.recommendation}</p>
+                    </div>
+                </div>
+
+                {/* Chart & Math */}
+                <div className="border-t border-slate-100 pt-4 mt-4">
+                    <PrintChart config={item.deep_dive?.chart_config} defaultCurrency={currency} />
+                    <div className="flex items-center gap-2 mt-2 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100 w-fit">
+                        <Layout className="w-2.5 h-2.5 text-slate-400" />
+                        <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Logic:</span>
+                        <code className="text-[9px] font-mono text-indigo-600 font-bold">{item.deep_dive?.analysis_logic?.formula}</code>
+                    </div>
+                </div>
             </div>
         </div>
+    );
+};
 
-        {/* Pillars Grid */}
-        <div className="grid grid-cols-3 gap-3">
-            {[
-                { label: "Conclusion", text: item.expert_pillars.conclusion, color: "bg-emerald-50 text-emerald-900 border-emerald-100" },
-                { label: "Justification", text: item.expert_pillars.justification, color: "bg-amber-50 text-amber-900 border-amber-100" },
-                { label: "Recommendation", text: item.expert_pillars.recommendation, color: "bg-indigo-50 text-indigo-900 border-indigo-100" },
-            ].map((p, i) => (
-                <div key={i} className={`p-3 rounded-lg border ${p.color}`}>
-                    <span className="text-[8px] font-black uppercase opacity-60 block mb-1">{p.label}</span>
-                    <p className="text-[10px] font-bold leading-tight">{p.text}</p>
-                </div>
-            ))}
-        </div>
-    </div>
-);
-
-// Helper to chunk array into pages
+// Helper: Chunk array for pagination (2 cards per page max)
 const chunkArray = (arr: any[], size: number) => {
     return Array.from({ length: Math.ceil(arr.length / size) }, (v, i) =>
         arr.slice(i * size, i * size + size)
@@ -130,40 +198,46 @@ export const PdfReportTemplate: React.FC<PdfReportTemplateProps> = ({ dataset, a
   if (!structured) return <div>No Analysis Data</div>;
 
   const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  
+  // Strict Pagination: 2 cards per page fits comfortably within A4 height
   const driversPages = chunkArray(structured.detailed_verdict.grid.performance_drivers, 2);
   const risksPages = chunkArray(structured.detailed_verdict.grid.watch_outs_risks, 2);
   const actionsPages = chunkArray(structured.detailed_verdict.grid.strategic_actions, 2);
 
+  let pageCount = 1;
+
   return (
-    <div className="font-sans text-slate-900">
+    <div className="font-sans text-slate-900 leading-normal">
       
       {/* PAGE 1: EXECUTIVE SUMMARY */}
-      <Page>
-         <div className="flex justify-between items-start mb-12 pb-6 border-b-2 border-slate-900">
+      <Page pageNumber={pageCount++}>
+         <div className="flex justify-between items-start mb-8 pb-4 border-b-2 border-slate-900">
              <div className="flex items-center gap-4">
-                 <div className="w-14 h-14 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-sm"><Rocket className="w-8 h-8" /></div>
+                 <div className="w-14 h-14 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-md"><Rocket className="w-7 h-7" /></div>
                  <div>
-                     <h1 className="text-4xl font-black tracking-tight text-slate-900 leading-none mb-1">Audit Report</h1>
-                     <p className="text-xs font-bold text-slate-500 uppercase tracking-[0.2em]">{dataset.name}</p>
+                     <h1 className="text-3xl font-black tracking-tight text-slate-900 leading-none mb-1">Audit Report</h1>
+                     <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">{dataset.name}</p>
                  </div>
              </div>
              <div className="text-right">
-                 <div className="text-sm font-black text-slate-900">{dateStr}</div>
-                 <div className="text-xs font-medium text-slate-500">Currency: {currencyCode}</div>
+                 <div className="text-xs font-black text-slate-900">{dateStr}</div>
+                 <div className="text-[10px] font-medium text-slate-500">Currency: {currencyCode}</div>
              </div>
          </div>
 
-         <div className="bg-slate-50 rounded-[2rem] p-10 border border-slate-200 mb-10 flex gap-10 items-center shadow-sm">
-             <div className="text-center w-40 shrink-0">
-                 <span className="text-7xl font-black text-indigo-600 block leading-none mb-2">{score.value}</span>
-                 <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Integrated Score</span>
+         {/* Scorecard */}
+         <div className="bg-slate-50 rounded-[1.5rem] p-6 border border-slate-200 mb-8 flex gap-8 items-center">
+             <div className="text-center w-32 shrink-0">
+                 <span className="text-6xl font-black text-indigo-600 block leading-none mb-1">{score.value}</span>
+                 {/* TYPO FIX: Ensuring INTEGRATED SCORE is correctly spelled */}
+                 <span className="text-[8px] font-black uppercase text-slate-400 tracking-widest">INTEGRATED SCORE</span>
              </div>
-             <div className="flex-1 grid grid-cols-4 gap-4">
+             <div className="flex-1 grid grid-cols-2 gap-y-3 gap-x-6">
                   {Object.entries(score.breakdown).map(([key, val]) => (
-                      <div key={key} className="space-y-2">
-                          <div className="flex justify-between text-[8px] font-black uppercase text-slate-500">
+                      <div key={key} className="space-y-1">
+                          <div className="flex justify-between text-[9px] font-black uppercase text-slate-500 tracking-wider">
                               <span>{key}</span>
-                              <span>{Math.round(val as number)}%</span>
+                              <span>{Math.round(val as number)}/100</span>
                           </div>
                           <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                               <div className="h-full bg-indigo-500" style={{ width: `${val}%` }} />
@@ -173,77 +247,70 @@ export const PdfReportTemplate: React.FC<PdfReportTemplateProps> = ({ dataset, a
              </div>
          </div>
 
-         <div className="mb-12">
-             <div className="inline-block px-3 py-1 bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest rounded mb-4">Executive Verdict</div>
-             <h2 className="text-3xl font-black text-slate-900 leading-tight mb-4">{structured.detailed_verdict.verdict.headline}</h2>
-             <p className="text-base text-slate-600 font-medium leading-relaxed">{structured.detailed_verdict.verdict.description}</p>
+         <div className="mb-8 p-6 bg-white border border-slate-200 rounded-[1.5rem]">
+             <div className="inline-block px-3 py-1 bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest rounded mb-3">Executive Verdict</div>
+             <h2 className="text-xl font-black text-slate-900 leading-tight mb-3">{structured.detailed_verdict.verdict.headline}</h2>
+             <p className="text-[11px] text-slate-600 font-medium leading-relaxed">{structured.detailed_verdict.verdict.description}</p>
          </div>
 
-         <div className="grid grid-cols-3 gap-6 mb-10">
-             <div className="p-5 bg-white border border-slate-200 rounded-2xl text-center">
-                 <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">Spend</div>
-                 <div className="text-2xl font-black text-slate-900">{metrics.totals.spend.toLocaleString(undefined, { style: 'currency', currency: currencyCode })}</div>
+         <div className="grid grid-cols-3 gap-3 mb-6">
+             <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-center">
+                 <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Spend</div>
+                 <div className="text-lg font-black text-slate-900">{metrics.totals.spend.toLocaleString(undefined, { style: 'currency', currency: currencyCode })}</div>
              </div>
-             <div className="p-5 bg-white border border-slate-200 rounded-2xl text-center">
-                 <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">CPA</div>
-                 <div className="text-2xl font-black text-indigo-600">{metrics.totals.cpa.toLocaleString(undefined, { style: 'currency', currency: currencyCode })}</div>
+             <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-center">
+                 <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">Blended CPA</div>
+                 <div className="text-lg font-black text-indigo-600">{metrics.totals.cpa.toLocaleString(undefined, { style: 'currency', currency: currencyCode })}</div>
              </div>
-             <div className="p-5 bg-white border border-slate-200 rounded-2xl text-center">
-                 <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1">ROAS</div>
-                 <div className="text-2xl font-black text-emerald-600">{metrics.totals.roas.toFixed(2)}x</div>
+             <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-center">
+                 <div className="text-[8px] font-black text-slate-400 uppercase tracking-widest mb-1">ROAS</div>
+                 <div className="text-lg font-black text-emerald-600">{metrics.totals.roas.toFixed(2)}x</div>
              </div>
-         </div>
-
-         <div className="h-[250px] w-full border border-slate-100 rounded-2xl p-4 bg-white">
-             <div className="text-[9px] font-black text-slate-400 uppercase mb-4 text-center">30-Day Performance Trend</div>
-             <ResponsiveContainer width="100%" height="100%">
-                 <LineChart data={metrics.trends}>
-                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                     <XAxis dataKey="date" hide />
-                     <YAxis axisLine={false} tickLine={false} tick={{fontSize: 9, fontWeight: 700, fill: '#94a3b8'}} />
-                     <Line type="monotone" dataKey="conversions" stroke="#6366f1" strokeWidth={3} dot={false} isAnimationActive={false} />
-                     <Line type="monotone" dataKey="cpa" stroke="#f59e0b" strokeWidth={3} dot={false} isAnimationActive={false} />
-                 </LineChart>
-             </ResponsiveContainer>
          </div>
       </Page>
 
       {/* DRIVERS PAGES */}
       {driversPages.map((chunk, i) => (
-          <Page key={`driver-page-${i}`}>
+          <Page key={`driver-page-${i}`} pageNumber={pageCount++}>
               {i === 0 && (
-                  <div className="flex items-center gap-3 mb-10 pb-4 border-b-2 border-emerald-500">
-                      <TrendingUp className="w-8 h-8 text-emerald-600" />
-                      <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tight">Performance Drivers</h2>
-                  </div>
+                  <SectionTitle 
+                    title="Performance Drivers" 
+                    icon={TrendingUp} 
+                    color="bg-emerald-500" 
+                    desc="Core elements positively impacting the account score and efficiency." 
+                  />
               )}
-              {chunk.map((item, idx) => <DeepDivePrintCard key={idx} item={item} currency={currencyCode} />)}
+              {chunk.map((item, idx) => <PrintCard key={idx} item={item} currency={currencyCode} />)}
           </Page>
       ))}
 
       {/* RISKS PAGES */}
       {risksPages.map((chunk, i) => (
-          <Page key={`risk-page-${i}`}>
+          <Page key={`risk-page-${i}`} pageNumber={pageCount++}>
               {i === 0 && (
-                  <div className="flex items-center gap-3 mb-10 pb-4 border-b-2 border-amber-500">
-                      <ShieldAlert className="w-8 h-8 text-amber-600" />
-                      <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tight">Watch-outs & Risks</h2>
-                  </div>
+                  <SectionTitle 
+                    title="Watch-outs & Risks" 
+                    icon={ShieldAlert} 
+                    color="bg-amber-500" 
+                    desc="Critical inefficiencies and waste areas detected in the data set." 
+                  />
               )}
-              {chunk.map((item, idx) => <DeepDivePrintCard key={idx} item={item} currency={currencyCode} />)}
+              {chunk.map((item, idx) => <PrintCard key={idx} item={item} currency={currencyCode} />)}
           </Page>
       ))}
 
       {/* ACTIONS PAGES */}
       {actionsPages.map((chunk, i) => (
-          <Page key={`action-page-${i}`}>
+          <Page key={`action-page-${i}`} pageNumber={pageCount++}>
               {i === 0 && (
-                  <div className="flex items-center gap-3 mb-10 pb-4 border-b-2 border-indigo-500">
-                      <ListChecks className="w-8 h-8 text-indigo-600" />
-                      <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tight">Strategic Actions</h2>
-                  </div>
+                  <SectionTitle 
+                    title="Strategic Actions" 
+                    icon={ListChecks} 
+                    color="bg-indigo-500" 
+                    desc="Recommended next steps to optimize performance and scale." 
+                  />
               )}
-              {chunk.map((item, idx) => <DeepDivePrintCard key={idx} item={item} currency={currencyCode} />)}
+              {chunk.map((item, idx) => <PrintCard key={idx} item={item} currency={currencyCode} />)}
           </Page>
       ))}
     </div>
