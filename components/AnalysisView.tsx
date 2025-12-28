@@ -8,6 +8,7 @@ import { calculateAggregatedMetrics } from '../utils/analyticsHelper';
 import { askAdPilot, analyzeDataset } from '../services/geminiService';
 import { generateReportPDF } from '../utils/pdfExport';
 import { LiveAudioConsole } from './LiveAudioConsole';
+import { PdfReportTemplate } from './PdfReportTemplate';
 import { 
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LineChart, Legend, AreaChart, Area, Label, Line
 } from 'recharts';
@@ -360,20 +361,26 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
 
   const handleExport = async () => {
     if (!currentAnalysis?.structuredData || isExporting) return;
+    
+    // 1. Enable Export Mode (Renders the PDF Template in the hidden container)
     setIsExporting(true);
-    try {
-      const exportIds = ['pdf-export-container'];
-      await generateReportPDF(exportIds, {
-        accountName: dataset.name,
-        dateRange: 'Last 30 Days',
-        language,
-        style: 'light'
-      });
-    } catch (err) {
-      console.error("PDF Export Error:", err);
-    } finally {
-      setIsExporting(false);
-    }
+    
+    // 2. Wait for React to render the template and Recharts to draw the SVG
+    // 2000ms gives enough buffer for chart calculation and rendering
+    setTimeout(async () => {
+        try {
+            await generateReportPDF('pdf-export-container', {
+                accountName: dataset.name,
+                dateRange: 'Last 30 Days',
+                language,
+                style: 'light'
+            });
+        } catch (err) {
+            console.error("PDF Export Error:", err);
+        } finally {
+            setIsExporting(false);
+        }
+    }, 2000);
   };
 
   const handleSuggestedClick = (q: string) => {
@@ -639,7 +646,19 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
         )}
       </div>
 
-      <div id="pdf-export-container" className="fixed top-0 left-[-9999px] w-[1200px] bg-white text-slate-900 pointer-events-none">
+      <div 
+        id="pdf-export-container" 
+        className="fixed top-0 left-[-9999px] pointer-events-none"
+        style={{ width: '794px' }} 
+      >
+          {isExporting && currentAnalysis && currentAnalysis.structuredData && (
+              <PdfReportTemplate 
+                dataset={dataset} 
+                analysis={currentAnalysis} 
+                metrics={metrics} 
+                currencyCode={currencyCode} 
+              />
+          )}
       </div>
 
       <style dangerouslySetInnerHTML={{ __html: `

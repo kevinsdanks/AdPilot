@@ -23,53 +23,71 @@ const extractGroundingSources = (response: GenerateContentResponse): GroundingSo
 const safeParseJson = (text: string): any => {
     if (!text) return null;
 
-    // 1. Try parsing as-is (Most reliable for strict JSON mode)
+    // 1. Try parsing as-is
     try {
         return JSON.parse(text);
     } catch (e) {
-        // Continue to cleanup strategies
+        // Continue
     }
 
-    // 2. Strip Markdown (```json ... ```)
+    // 2. Strip Markdown
     let cleaned = text;
     const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (markdownMatch) {
         cleaned = markdownMatch[1];
     } else {
-        // Fallback: Attempt to find the outermost JSON object
         const firstBrace = text.indexOf('{');
+        const firstBracket = text.indexOf('[');
+        let start = -1;
+        if (firstBrace !== -1 && firstBracket !== -1) start = Math.min(firstBrace, firstBracket);
+        else if (firstBrace !== -1) start = firstBrace;
+        else if (firstBracket !== -1) start = firstBracket;
+
         const lastBrace = text.lastIndexOf('}');
-        if (firstBrace !== -1 && lastBrace !== -1) {
-            cleaned = text.substring(firstBrace, lastBrace + 1);
+        const lastBracket = text.lastIndexOf(']');
+        let end = -1;
+        if (lastBrace !== -1 && lastBracket !== -1) end = Math.max(lastBrace, lastBracket);
+        else if (lastBrace !== -1) end = lastBrace;
+        else if (lastBracket !== -1) end = lastBracket;
+
+        if (start !== -1 && end !== -1) {
+            cleaned = text.substring(start, end + 1);
         }
     }
     
-    // 3. Try parsing extracted content
+    // 3. Try parsing extracted
     try {
         return JSON.parse(cleaned);
     } catch (e) {
-        // Continue to aggressive cleanup
+        // Continue
     }
     
-    // 4. Aggressive cleanup for common LLM syntax errors
+    // 4. Aggressive cleanup
     try {
-        // Remove trailing commas before closing braces/brackets
+        // Move control char removal to top to avoid interference
+        cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
+
+        // Remove comments
+        cleaned = cleaned.replace(/^\s*\/\/.*$/gm, '');
+        cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
+        
+        // Remove trailing commas
         cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); 
         
-        // Fix missing commas between objects (e.g. }{ -> }, {) - Common in large arrays
+        // Fix missing commas between objects
         cleaned = cleaned.replace(/}\s*{/g, '}, {');
-        // Fix missing commas between array end and object start
         cleaned = cleaned.replace(/]\s*{/g, '], {');
-        // Fix missing commas between object end and array start
         cleaned = cleaned.replace(/}\s*\[/g, '}, [');
         
-        // Remove non-printable control characters (excluding standard whitespace)
-        cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
-        
+        // Fix missing commas between properties
+        // Explicitly handle newline case first as it's most common
+        cleaned = cleaned.replace(/([0-9]|true|false|null|"|}|])\s*\n\s*"/g, '$1, "');
+        // Handle same-line missing commas
+        cleaned = cleaned.replace(/([0-9]|true|false|null|"|}|])\s+(?=")/g, '$1, ');
+
         return JSON.parse(cleaned);
     } catch (e) {
         console.error("JSON Parse Failed Final Attempt:", e);
-        // Fallback: return null to prevent app crash, UI should handle null structuredData
         return null;
     }
 };
@@ -160,7 +178,7 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
   - Blended CPC: ${metrics.totals.cpc.toFixed(2)} ${currency}
   `;
 
-  // 2. Prepare Raw Data Context - REVERTED TO 500 ROWS LIMIT
+  // 2. Prepare Raw Data Context - 500 rows for granular analysis
   const rawDataContext = dataset.files.map(f => 
     `FILE: ${f.name} (First 500 rows):\n${exportToCSV(f.data.slice(0, 500))}`
   ).join('\n\n---\n\n');
@@ -246,6 +264,8 @@ STRICT CONSTRAINTS:
 6. ANALYSIS LOGIC: In 'analysis_logic', explain exactly which columns and rows were used to calculate the finding (e.g., "Filtered for Age=65+, Sum(Impressions) / Sum(Spend)").
 7. STRATEGIC ACTIONS: Ensure the 'strategic_actions' section is fully populated with actionable steps to improve performance based on the risks and drivers identified.
 8. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
+9. LIMIT CHART DATA: Maximum 12 data points per chart.
+10. SYNTAX: Ensure valid JSON. All properties must be comma-separated.
 `,
     config: {
       maxOutputTokens: 8192,
@@ -324,7 +344,7 @@ export const askAdPilot = async (dataset: Dataset, question: string, currency: s
   ROAS: ${metrics.totals.roas.toFixed(2)}
   `;
 
-  // Increased context for Q&A - REVERTED TO 300 ROWS
+  // Increased context for Q&A
   const context = dataset.files.map(f => `FILE: ${f.name} (First 300 rows):\n${exportToCSV(f.data.slice(0, 300))}`).join('\n\n---\n\n');
   
   const response = await ai.models.generateContent({
