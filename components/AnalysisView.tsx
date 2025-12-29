@@ -8,12 +8,11 @@ import { calculateAggregatedMetrics } from '../utils/analyticsHelper';
 import { askAdPilot, analyzeDataset } from '../services/geminiService';
 import { generateReportPDF } from '../utils/pdfExport';
 import { LiveAudioConsole } from './LiveAudioConsole';
-import { PdfReportTemplate } from './PdfReportTemplate';
 import { 
   ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LineChart, Legend, AreaChart, Area, Label, Line
 } from 'recharts';
 import { 
-  Activity, TrendingUp, Sparkles, Bot, Loader2, Send, ShieldCheck, ShieldAlert, ListChecks, X, Maximize2, Star, Rocket, Files, Search, Info, Calculator, RefreshCw, CheckCircle2, MessageSquare, Download, FileText, Layout, Zap, Brain, ChevronRight, Clock, Link as LinkIcon, FileDown, Mic
+  Activity, TrendingUp, Sparkles, Bot, Loader2, Send, ShieldCheck, ShieldAlert, ListChecks, X, Maximize2, Star, Rocket, Files, Search, Info, Calculator, RefreshCw, CheckCircle2, MessageSquare, Download, FileText, Layout, Zap, Brain, ChevronRight, Clock, Link as LinkIcon, FileDown, Mic, Target, AlertTriangle
 } from 'lucide-react';
 
 interface AnalysisViewProps {
@@ -34,6 +33,7 @@ const translations = {
     action: "Strategic Actions",
     spend: "Total Spend",
     leads: "Results",
+    value: "Total Value",
     askPlaceholder: "Ask a cross-dimensional question...",
     interface: "Senior Analyst Console",
     inquiry: "Audit Search",
@@ -66,6 +66,7 @@ const translations = {
     action: "STRATĒĢISKĀ RĪCĪBA",
     spend: "Kopējais Spend",
     leads: "Rezultāti",
+    value: "Kopējā Vērtība",
     askPlaceholder: "Uzdodiet jautājumu par dimensijām...",
     interface: "Vecākā analītiķa saskarne",
     inquiry: "Audita meklēšana",
@@ -176,14 +177,10 @@ const MetricCard: React.FC<{ label: string; value: string; isPrimary?: boolean }
 const DeepDiveChart: React.FC<{ config: DeepDiveDetail['chart_config']; defaultCurrency: string }> = ({ config, defaultCurrency }) => {
   if (!config) return null;
   
-  // Robust formatter that handles the specific unit symbol logic with fallbacks
   const formatVal = (val: number) => {
-    // If unit symbol exists (even if empty string provided by AI), use it.
     if (config.unit_symbol !== undefined && config.unit_symbol !== null) {
         return `${val.toLocaleString()}${config.unit_symbol}`;
     }
-    
-    // Fallbacks based on format type if unit symbol is missing
     if (config.value_format === 'currency') return `${val.toLocaleString()} ${defaultCurrency}`;
     if (config.value_format === 'percent') return `${val.toFixed(2)}%`;
     return val.toLocaleString();
@@ -199,7 +196,6 @@ const DeepDiveChart: React.FC<{ config: DeepDiveDetail['chart_config']; defaultC
           <div className="space-y-2">
             {payload.map((p: any, i: number) => (
               <div key={i} className="flex flex-col gap-1">
-                {/* Use Y-Axis Label or fallback to 'Value', never use 'value' key directly */}
                 <span className="text-[9px] font-black text-indigo-300 uppercase tracking-widest">{config.y_axis_label || "Value"}</span>
                 <div className="flex items-center gap-2">
                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: p.color || p.payload.color || colors[i % colors.length] }} />
@@ -215,11 +211,7 @@ const DeepDiveChart: React.FC<{ config: DeepDiveDetail['chart_config']; defaultC
   };
   
   return (
-    <div className="w-full h-[450px] bg-slate-50/50 p-10 rounded-[2.5rem] border border-slate-100 relative overflow-visible">
-      <div className="flex items-center gap-3 mb-8 relative z-10">
-         <div className="p-2.5 bg-white rounded-xl shadow-sm text-indigo-500 border border-slate-50"><Layout className="w-4 h-4" /></div>
-         <h6 className="text-[11px] font-black uppercase tracking-[0.1em] text-slate-400 leading-none">{config.title || "Data Visualization"}</h6>
-      </div>
+    <div className="w-full h-full relative overflow-visible">
       <ResponsiveContainer width="100%" height="100%">
         {config.type === 'pie_chart' ? (
           <PieChart>
@@ -235,7 +227,9 @@ const DeepDiveChart: React.FC<{ config: DeepDiveDetail['chart_config']; defaultC
              <XAxis type="number" hide />
              <YAxis dataKey="label" type="category" axisLine={false} tickLine={false} tick={{ fontSize: 10, fontWeight: 800, fill: '#64748b' }} width={120} />
              <Tooltip content={<CustomTooltip />} />
-             <Bar dataKey="value" fill="#6366f1" radius={[0, 6, 6, 0]} barSize={35} label={{ position: 'right', fontSize: 11, fontWeight: 900, fill: '#6366f1', formatter: formatVal }} />
+             <Bar dataKey="value" radius={[0, 6, 6, 0]} barSize={35} label={{ position: 'right', fontSize: 11, fontWeight: 900, fill: '#6366f1', formatter: formatVal }}>
+                {(config.data || []).map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color || colors[index % colors.length]} />)}
+             </Bar>
            </BarChart>
         ) : config.type === 'stacked_bar' ? (
            <BarChart data={config.data || []} margin={{ top: 20, right: 30, left: 30, bottom: 60 }}>
@@ -262,7 +256,7 @@ const DeepDiveChart: React.FC<{ config: DeepDiveDetail['chart_config']; defaultC
             </YAxis>
             <Tooltip content={<CustomTooltip />} />
             <Bar dataKey="value" radius={[6, 6, 0, 0]} barSize={40}>
-              {(config.data || []).map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color || (entry.is_benchmark ? '#cbd5e1' : colors[0])} />)}
+              {(config.data || []).map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color || (entry.is_benchmark ? '#cbd5e1' : colors[index % colors.length])} />)}
             </Bar>
           </BarChart>
         ) : (
@@ -282,6 +276,49 @@ const DeepDiveChart: React.FC<{ config: DeepDiveDetail['chart_config']; defaultC
     </div>
   );
 };
+
+const PrintCard: React.FC<{ item: AuditPoint; currency: string }> = ({ item, currency }) => (
+  <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white">
+    <div className="bg-slate-50 p-5 border-b border-slate-100 flex justify-between items-start">
+        <div>
+            <div className={`inline-block px-2 py-1 rounded-md text-[9px] font-black uppercase tracking-widest mb-2 text-white ${item.confidence === 'High' ? 'bg-emerald-500' : 'bg-amber-500'}`}>
+                {item.confidence} Confidence
+            </div>
+            <h4 className="text-xl font-black text-slate-900 leading-tight">{item.title}</h4>
+        </div>
+        <div className="text-right">
+             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">Projected Impact</span>
+             <span className="text-2xl font-black text-indigo-600">{item.impact || "N/A"}</span>
+        </div>
+    </div>
+    <div className="p-5">
+        <p className="text-xs font-medium text-slate-600 mb-6 leading-relaxed">{item.text}</p>
+
+        {item.deep_dive?.chart_config && (
+             <div className="h-[250px] w-full mb-6 border border-slate-100 rounded-xl bg-slate-50/50 p-4">
+                 <DeepDiveChart config={item.deep_dive.chart_config} defaultCurrency={currency} />
+             </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-4">
+             {[
+                 { label: "Observation", text: item.expert_pillars?.observation || "Data pattern analyzed.", color: "bg-indigo-500" },
+                 { label: "Conclusion", text: item.expert_pillars?.conclusion || "Insight derived.", color: "bg-emerald-500" },
+                 { label: "Justification", text: item.expert_pillars?.justification || "Based on metrics.", color: "bg-amber-500" },
+                 { label: "Recommendation", text: item.expert_pillars?.recommendation || "Action suggested.", color: "bg-rose-500" }
+             ].map((p, i) => (
+                 <div key={i} className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                     <div className="flex items-center gap-2 mb-1">
+                         <div className={`w-1.5 h-1.5 rounded-full ${p.color}`}></div>
+                         <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{p.label}</span>
+                     </div>
+                     <p className="text-[9px] font-bold text-slate-700 leading-relaxed">{p.text}</p>
+                 </div>
+             ))}
+        </div>
+    </div>
+  </div>
+);
 
 export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, language, onLanguageChange, isAnalyzing }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'data'>('overview');
@@ -306,6 +343,34 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
   const metrics = useMemo(() => calculateAggregatedMetrics(mainData), [mainData]);
 
   const formatCurrency = (val: number) => val.toLocaleString(undefined, { style: 'currency', currency: currencyCode });
+
+  // Priority-based Key Metrics Construction
+  const displayMetrics = useMemo(() => {
+    // Determine the Primary Highlight (Revenue > ROAS > CPA)
+    let primaryMetricKey = 'cpa';
+    if (metrics.totals.revenue > 0) primaryMetricKey = 'revenue';
+    else if (metrics.totals.roas > 0) primaryMetricKey = 'roas';
+
+    // Raw List of candidates
+    const candidates = [
+        { key: 'spend', label: t.spend, val: metrics.totals.spend, fmt: formatCurrency(metrics.totals.spend), priority: 1 },
+        { key: 'revenue', label: t.value, val: metrics.totals.revenue, fmt: formatCurrency(metrics.totals.revenue), priority: 2 },
+        { key: 'roas', label: 'ROAS', val: metrics.totals.roas, fmt: `${metrics.totals.roas.toFixed(2)}x`, priority: 3 },
+        { key: 'cpa', label: 'CPA', val: metrics.totals.cpa, fmt: formatCurrency(metrics.totals.cpa), priority: 4 },
+        { key: 'conversions', label: t.leads, val: metrics.totals.conversions, fmt: metrics.totals.conversions.toLocaleString(), priority: 5 },
+        { key: 'cpc', label: 'CPC', val: metrics.totals.cpc, fmt: formatCurrency(metrics.totals.cpc), priority: 6 },
+        { key: 'ctr', label: 'CTR', val: metrics.totals.ctr, fmt: `${metrics.totals.ctr.toFixed(2)}%`, priority: 7 },
+        { key: 'cpm', label: 'CPM', val: metrics.totals.cpm, fmt: formatCurrency(metrics.totals.cpm), priority: 8 },
+    ];
+
+    // Filter out zero values and sort by priority, then take top 6
+    return candidates
+        .filter(m => m.val > 0) // Strict: no zero values
+        .sort((a, b) => a.priority - b.priority)
+        .slice(0, 6)
+        .map(m => ({ ...m, isPrimary: m.key === primaryMetricKey }));
+  }, [metrics, t, formatCurrency]);
+
 
   useEffect(() => {
     if (isUpdating) {
@@ -361,19 +426,11 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
 
   const handleExport = async () => {
     if (!currentAnalysis?.structuredData || isExporting) return;
-    
-    // 1. Enable Export Mode (Renders the PDF Template in the hidden container)
     setIsExporting(true);
-    
-    // 2. Wait for React to render the template and Recharts to draw the SVG
-    // 2000ms gives enough buffer for chart calculation and rendering
     setTimeout(async () => {
         try {
             await generateReportPDF('pdf-export-container', {
-                accountName: dataset.name,
-                dateRange: 'Last 30 Days',
-                language,
-                style: 'light'
+                accountName: dataset.name
             });
         } catch (err) {
             console.error("PDF Export Error:", err);
@@ -391,6 +448,7 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
 
   const structured = currentAnalysis?.structuredData;
   const currentScore = structured?.score || metrics.score;
+  const hasAnalysisFailed = !isUpdating && (!structured || !structured.detailed_verdict);
 
   const PillarBar = ({ label, value, color }: { label: string, value: number, color: string }) => (
     <div className="space-y-1.5 flex-1 min-w-[120px]">
@@ -484,28 +542,37 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
            </div>
 
            <div className="grid grid-cols-2 md:grid-cols-6 gap-6">
-             <MetricCard label={t.spend} value={formatCurrency(metrics.totals.spend)} />
-             <MetricCard label="CPA" value={formatCurrency(metrics.totals.cpa)} isPrimary />
-             <MetricCard label="CPC" value={formatCurrency(metrics.totals.cpc)} />
-             <MetricCard label={t.leads} value={metrics.totals.conversions.toLocaleString()} />
-             <MetricCard label="CTR" value={`${metrics.totals.ctr.toFixed(2)}%`} />
-             <MetricCard label="CPM" value={formatCurrency(metrics.totals.cpm)} />
+             {displayMetrics.map((m) => (
+               <MetricCard key={m.key} label={m.label} value={m.fmt} isPrimary={m.isPrimary} />
+             ))}
            </div>
 
            <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
                 <GridColumn title={t.drivers} icon={TrendingUp} color="text-emerald-500" bgColor="bg-emerald-50/20">
                   {isUpdating ? [1,2,3].map(i => <div key={i} className="h-64 bg-white/50 border border-slate-100 rounded-[2rem] p-8 animate-pulse shadow-sm" />) : 
+                    hasAnalysisFailed ? <div className="p-4 text-center text-slate-400 text-xs font-bold uppercase tracking-widest">Analysis Unavailable</div> :
                     structured?.detailed_verdict?.grid?.performance_drivers?.slice(0, 3).map((item, i) => <GridItem key={i} item={item} t={t} onClick={() => setSelectedAuditPoint(item)} />)}
                 </GridColumn>
                 <GridColumn title={t.risks} icon={ShieldAlert} color="text-amber-500" bgColor="bg-amber-50/20">
                   {isUpdating ? [1,2,3].map(i => <div key={i} className="h-64 bg-white/50 border border-slate-100 rounded-[2rem] p-8 animate-pulse shadow-sm" />) : 
+                    hasAnalysisFailed ? <div className="p-4 text-center text-slate-400 text-xs font-bold uppercase tracking-widest">Analysis Unavailable</div> :
                     structured?.detailed_verdict?.grid?.watch_outs_risks?.slice(0, 3).map((item, i) => <GridItem key={i} item={item} t={t} onClick={() => setSelectedAuditPoint(item)} />)}
                 </GridColumn>
                 <GridColumn title={t.action} icon={ListChecks} color="text-indigo-500" bgColor="bg-indigo-50/20">
                   {isUpdating ? [1,2,3].map(i => <div key={i} className="h-64 bg-white/50 border border-slate-100 rounded-[2rem] p-8 animate-pulse shadow-sm" />) : 
+                    hasAnalysisFailed ? <div className="p-4 text-center text-slate-400 text-xs font-bold uppercase tracking-widest">Analysis Unavailable</div> :
                     structured?.detailed_verdict?.grid?.strategic_actions?.slice(0, 3).map((item, i) => <GridItem key={i} item={item} t={t} onClick={() => setSelectedAuditPoint(item)} />)}
                 </GridColumn>
            </div>
+           
+           {hasAnalysisFailed && !isUpdating && (
+              <div className="bg-red-50 border border-red-100 p-8 rounded-[2rem] text-center">
+                 <AlertTriangle className="w-8 h-8 text-red-500 mx-auto mb-4" />
+                 <h3 className="text-xl font-black text-red-900 mb-2">Analysis Generation Interrupted</h3>
+                 <p className="text-sm text-red-700 font-bold mb-6">The AI could not format the insights correctly for this dataset. This usually happens with extremely large files or unexpected characters.</p>
+                 <button onClick={() => analyzeDataset(dataset, currencyCode, language).then(setCurrentAnalysis)} className="px-8 py-3 bg-red-600 text-white font-black rounded-xl uppercase tracking-widest text-xs hover:bg-red-700 transition-all shadow-lg shadow-red-200">Retry Analysis</button>
+              </div>
+           )}
 
            <PerformanceChart data={metrics.trends} currency={currencyCode} goal="LEADS" />
 
@@ -646,19 +713,72 @@ export const AnalysisView: React.FC<AnalysisViewProps> = ({ dataset, analysis, l
         )}
       </div>
 
-      <div 
-        id="pdf-export-container" 
-        className="fixed top-0 left-[-9999px] pointer-events-none"
-        style={{ width: '794px' }} 
-      >
-          {isExporting && currentAnalysis && currentAnalysis.structuredData && (
-              <PdfReportTemplate 
-                dataset={dataset} 
-                analysis={currentAnalysis} 
-                metrics={metrics} 
-                currencyCode={currencyCode} 
-              />
-          )}
+      {/* Hidden Print Container */}
+      <div id="pdf-export-container" style={{ position: 'absolute', top: -9999, left: -9999, width: '794px', background: 'white' }}>
+
+          <div className="p-8 border-b border-slate-200 mb-4 bg-white">
+              <h1 className="text-4xl font-black text-slate-900 mb-2">Audit Report</h1>
+              <p className="text-sm font-bold text-slate-500 uppercase tracking-widest">{dataset.name} • {currencyCode}</p>
+          </div>
+
+          <div className="p-8 mb-4 bg-white">
+              <div className="flex items-center justify-between mb-6">
+                   <div>
+                       <span className="text-6xl font-black text-indigo-600 block leading-none">{structured?.score?.value || 0}</span>
+                       <span className="text-xs font-black text-slate-400 uppercase tracking-widest">INTEGRATED SCORE</span>
+                   </div>
+                   <div className="text-right max-w-md">
+                       <h3 className="text-lg font-black text-slate-900 mb-1">Executive Verdict</h3>
+                       <p className="text-xs text-slate-600 font-medium leading-relaxed">{structured?.detailed_verdict?.verdict?.headline}</p>
+                   </div>
+              </div>
+              <div className="grid grid-cols-4 gap-4 bg-slate-50 p-6 rounded-xl border border-slate-100">
+                  <div><span className="text-[9px] text-slate-400 font-black uppercase">Spend</span><div className="text-lg font-black">{formatCurrency(metrics.totals.spend)}</div></div>
+                  <div><span className="text-[9px] text-slate-400 font-black uppercase">CPA</span><div className="text-lg font-black text-indigo-600">{formatCurrency(metrics.totals.cpa)}</div></div>
+                  <div><span className="text-[9px] text-slate-400 font-black uppercase">ROAS</span><div className="text-lg font-black">{metrics.totals.roas.toFixed(2)}x</div></div>
+                  <div><span className="text-[9px] text-slate-400 font-black uppercase">CTR</span><div className="text-lg font-black">{metrics.totals.ctr.toFixed(2)}%</div></div>
+              </div>
+          </div>
+
+          <div className="px-8 mb-8 bg-white">
+              <PerformanceChart data={metrics.trends} currency={currencyCode} goal="LEADS" isPrint={true} />
+          </div>
+
+          <div className="px-8 mb-4 bg-white" data-type="header">
+              <div className="pb-2 border-b-2 border-slate-800">
+                  <h2 className="text-xl font-black text-slate-900 uppercase tracking-tighter">Performance Drivers</h2>
+              </div>
+          </div>
+
+          {structured?.detailed_verdict?.grid?.performance_drivers?.map((item, i) => (
+              <div key={`driver-${i}`} className="px-8 mb-6 bg-white">
+                  <PrintCard item={item} currency={currencyCode} />
+              </div>
+          ))}
+
+          <div className="px-8 mb-4 bg-white" data-type="header">
+              <div className="pb-2 border-b-2 border-slate-800">
+                  <h2 className="text-xl font-black text-slate-900 uppercase tracking-tighter">Watch-outs & Risks</h2>
+              </div>
+          </div>
+
+          {structured?.detailed_verdict?.grid?.watch_outs_risks?.map((item, i) => (
+              <div key={`risk-${i}`} className="px-8 mb-6 bg-white">
+                  <PrintCard item={item} currency={currencyCode} />
+              </div>
+          ))}
+
+          <div className="px-8 mb-4 bg-white" data-type="header">
+              <div className="pb-2 border-b-2 border-slate-800">
+                  <h2 className="text-xl font-black text-slate-900 uppercase tracking-tighter">Strategic Actions</h2>
+              </div>
+          </div>
+
+          {structured?.detailed_verdict?.grid?.strategic_actions?.map((item, i) => (
+              <div key={`action-${i}`} className="px-8 mb-6 bg-white">
+                  <PrintCard item={item} currency={currencyCode} />
+              </div>
+          ))}
       </div>
 
       <style dangerouslySetInnerHTML={{ __html: `

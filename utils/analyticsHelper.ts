@@ -30,7 +30,28 @@ const findKey = (columns: string[], patterns: RegExp[]) => {
 const parseNumber = (val: any): number => {
   if (typeof val === 'number') return val;
   if (typeof val === 'string') {
-      const clean = val.replace(/[^0-9.-]/g, ''); 
+      let clean = val.trim();
+      if (!clean) return 0;
+      
+      // Heuristic for European format (comma as decimal): 1.234,56 or 123,45
+      // If last comma is after last dot, or comma exists without dot
+      const lastComma = clean.lastIndexOf(',');
+      const lastDot = clean.lastIndexOf('.');
+      
+      if (lastComma > lastDot) {
+         // Comma is decimal. Remove dots (thousands), replace comma with dot
+         clean = clean.replace(/\./g, '').replace(',', '.');
+      } else {
+         // Dot is decimal (or no separators). Remove commas (thousands)
+         clean = clean.replace(/,/g, '');
+      }
+      
+      // Remove spaces (common thousand separator)
+      clean = clean.replace(/\s/g, '');
+      
+      // Sanitize remaining characters
+      clean = clean.replace(/[^0-9.-]/g, '');
+      
       const num = parseFloat(clean);
       return isNaN(num) ? 0 : num;
   }
@@ -79,12 +100,13 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
     }
 
     const columns = Object.keys(data[0]);
-    const spendKey = findKey(columns, [/^amount spent/i, /^spend$/i, /^cost$/i]);
-    const impKey = findKey(columns, [/^impressions$/i, /^imps$/i]);
-    const clicksKey = findKey(columns, [/^clicks \(all\)$/i, /^clicks$/i, /^link clicks$/i]);
-    const convKey = findKey(columns, [/^results$/i, /^leads?$/i, /^website leads?$/i, /^purchases?$/i, /^conversions?$/i, /^total conversions$/i]);
-    const revKey = findKey(columns, [/purchase.*value/i, /conversion.*value/i, /^revenue$/i, /^total value$/i]);
-    const freqKey = findKey(columns, [/^frequency$/i]);
+    // Added Latvian translation patterns
+    const spendKey = findKey(columns, [/^amount spent/i, /^spend$/i, /^cost$/i, /^iztērētā summa$/i, /^summa$/i]);
+    const impKey = findKey(columns, [/^impressions$/i, /^imps$/i, /^rādījumi$/i]);
+    const clicksKey = findKey(columns, [/^clicks \(all\)$/i, /^clicks$/i, /^link clicks$/i, /^klikšķi$/i, /^klikšķi \(visi\)$/i]);
+    const convKey = findKey(columns, [/^results$/i, /^leads?$/i, /^website leads?$/i, /^purchases?$/i, /^conversions?$/i, /^total conversions$/i, /^rezultāti$/i]);
+    const revKey = findKey(columns, [/purchase.*value/i, /conversion.*value/i, /^revenue$/i, /^total value$/i, /reklāmguvumu vērtība/i]);
+    const freqKey = findKey(columns, [/^frequency$/i, /^biežums$/i]);
 
     let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalConversions = 0, totalRevenue = 0, avgFreq = 0, rowCount = 0;
     const dailyData: Record<string, any> = {};
@@ -105,7 +127,7 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
       avgFreq += freq;
       rowCount++;
 
-      const dateKey = columns.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('day') || k.toLowerCase().includes('starts'));
+      const dateKey = columns.find(k => k.toLowerCase().includes('date') || k.toLowerCase().includes('day') || k.toLowerCase().includes('starts') || k.toLowerCase().includes('datums'));
       let dStr = 'Unknown';
       if (dateKey && row[dateKey]) {
         const d = new Date(String(row[dateKey]));
@@ -132,7 +154,6 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
     // --- NEW 4-PILLAR LOGIC ---
 
     // 1. Performance Effectiveness (40%)
-    // Weight: CPA target, ROAS, conversion stability
     let perfScore = totalConversions > 0 
         ? Math.min(100, Math.max(10, (SCORING_MODEL_V2.benchmarks.CPA / cpa) * 90))
         : 20;
@@ -141,16 +162,13 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
     if (totalConversions < 5) perfScore *= 0.6;
 
     // 2. Delivery & Auction Health (25%)
-    // Stability of CPM, CTR and Frequency fatigue
     let deliveryScore = Math.min(100, Math.max(10, (SCORING_MODEL_V2.benchmarks.CPM / cpm) * 50 + (ctr / SCORING_MODEL_V2.benchmarks.CTR) * 50));
     if (finalAvgFreq > SCORING_MODEL_V2.benchmarks.FREQ_MAX) deliveryScore *= 0.8; // Fatigue penalty
 
     // 3. Creative & Message Quality (20%)
-    // Signals: CTR engagement vs benchmarks
     const creativeScore = Math.min(100, Math.max(10, (ctr / SCORING_MODEL_V2.benchmarks.CTR) * 100));
 
     // 4. Data & Structure Quality (15%)
-    // Tracking volume, thresholds, structure complexity
     let structureScore = totalConversions > 20 ? 95 : totalConversions > 5 ? 70 : 40;
     if (totalSpend > 2000 && totalConversions < 2) structureScore -= 40; // High spend but no tracking signal penalty
 

@@ -18,6 +18,7 @@ interface PerformanceChartProps {
   data: any[];
   currency: string;
   goal: 'SALES' | 'LEADS' | 'TRAFFIC';
+  isPrint?: boolean;
 }
 
 const METRIC_CONFIG: Record<string, { label: string, color: string, format: 'currency' | 'number' | 'percent' }> = {
@@ -29,7 +30,7 @@ const METRIC_CONFIG: Record<string, { label: string, color: string, format: 'cur
   cpm: { label: 'CPM', color: '#94a3b8', format: 'currency' }
 };
 
-export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, currency, goal }) => {
+export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, currency, goal, isPrint = false }) => {
   const availableMetrics = ['spend', 'conversions', 'cpa', 'cpc', 'ctr', 'cpm'];
   const [chartType, setChartType] = useState<'line' | 'bar'>('line');
   const [metric1, setMetric1] = useState<string>('conversions'); 
@@ -72,6 +73,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
   }, [data]);
 
   const toggleMetric = (e: any) => {
+    if (isPrint) return;
     const { dataKey } = e;
     setHiddenMetrics(prev => prev.includes(dataKey) ? prev.filter(k => k !== dataKey) : [...prev, dataKey]);
   };
@@ -133,43 +135,52 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
   };
 
   return (
-    <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-sm p-12 mb-12 overflow-hidden">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10 mb-12">
-        <div className="flex items-center gap-5">
-          <div className="p-4 bg-indigo-50 rounded-[1.8rem] text-indigo-600 shadow-inner border border-indigo-100">
-             {chartType === 'line' ? <LineChartIcon className="w-8 h-8" /> : <BarChartIcon className="w-8 h-8" />}
+    <div className={`bg-white rounded-[3.5rem] border border-slate-100 shadow-sm p-12 mb-12 overflow-hidden ${isPrint ? 'h-[400px] p-0 border-0 shadow-none rounded-none mb-0' : ''}`}>
+      {!isPrint && (
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-10 mb-12">
+          <div className="flex items-center gap-5">
+            <div className="p-4 bg-indigo-50 rounded-[1.8rem] text-indigo-600 shadow-inner border border-indigo-100">
+               {chartType === 'line' ? <LineChartIcon className="w-8 h-8" /> : <BarChartIcon className="w-8 h-8" />}
+            </div>
+            <div className="text-left">
+              <h3 className="font-extrabold text-slate-900 text-3xl tracking-tight leading-none mb-2">Performance Analytics</h3>
+              <p className="text-slate-400 text-[11px] font-black uppercase tracking-[0.2em] leading-none">Real-time auction intelligence & trends</p>
+            </div>
           </div>
-          <div className="text-left">
-            <h3 className="font-extrabold text-slate-900 text-3xl tracking-tight leading-none mb-2">Performance Analytics</h3>
-            <p className="text-slate-400 text-[11px] font-black uppercase tracking-[0.2em] leading-none">Real-time auction intelligence & trends</p>
+          <div className="flex flex-wrap items-center gap-6">
+               <div className="flex bg-slate-100 p-1.5 rounded-2xl shadow-inner border border-slate-200">
+                  <button onClick={() => setChartType('line')} className={`px-8 py-2.5 text-[11px] font-black uppercase rounded-xl transition-all ${chartType === 'line' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}>Line</button>
+                  <button onClick={() => setChartType('bar')} className={`px-8 py-2.5 text-[11px] font-black uppercase rounded-xl transition-all ${chartType === 'bar' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}>Bar</button>
+               </div>
+               <div className="flex gap-6 bg-slate-50 p-4 rounded-[1.8rem] border border-slate-100 shadow-sm">
+                  <MetricSelect label="Axis Primary" value={metric1} onChange={setMetric1} />
+                  <MetricSelect label="Axis Secondary" value={metric2} onChange={setMetric2} />
+               </div>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-6">
-             <div className="flex bg-slate-100 p-1.5 rounded-2xl shadow-inner border border-slate-200">
-                <button onClick={() => setChartType('line')} className={`px-8 py-2.5 text-[11px] font-black uppercase rounded-xl transition-all ${chartType === 'line' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}>Line</button>
-                <button onClick={() => setChartType('bar')} className={`px-8 py-2.5 text-[11px] font-black uppercase rounded-xl transition-all ${chartType === 'bar' ? 'bg-white shadow-md text-indigo-600' : 'text-slate-500 hover:text-slate-800'}`}>Bar</button>
-             </div>
-             <div className="flex gap-6 bg-slate-50 p-4 rounded-[1.8rem] border border-slate-100 shadow-sm">
-                <MetricSelect label="Axis Primary" value={metric1} onChange={setMetric1} />
-                <MetricSelect label="Axis Secondary" value={metric2} onChange={setMetric2} />
-             </div>
-        </div>
-      </div>
-      <div className="h-[500px] w-full px-4">
+      )}
+      
+      {isPrint && (
+         <div className="text-left mb-6 border-b border-slate-200 pb-2">
+            <h3 className="font-extrabold text-slate-900 text-xl tracking-tight uppercase">Performance Analytics</h3>
+         </div>
+      )}
+
+      <div className={`${isPrint ? 'h-[300px]' : 'h-[500px]'} w-full px-4`}>
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={normalizedData} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
             <XAxis 
               dataKey="date" 
-              tick={{ fontSize: 11, fill: '#94a3b8', fontWeight: 900 }} 
+              tick={{ fontSize: isPrint ? 12 : 11, fill: isPrint ? '#0f172a' : '#94a3b8', fontWeight: 900 }} 
               tickMargin={15} 
               axisLine={false} 
               tickLine={false}
               tickFormatter={formatDateLabel}
             />
-            <YAxis yAxisId="left" tick={{ fontSize: 11, fill: '#6366f1', fontWeight: 900 }} axisLine={false} tickLine={false} />
-            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11, fill: '#ec4899', fontWeight: 900 }} axisLine={false} tickLine={false} />
-            <Tooltip content={<CustomTooltip />} />
+            <YAxis yAxisId="left" tick={{ fontSize: isPrint ? 12 : 11, fill: '#6366f1', fontWeight: 900 }} axisLine={false} tickLine={false} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: isPrint ? 12 : 11, fill: '#ec4899', fontWeight: 900 }} axisLine={false} tickLine={false} />
+            {!isPrint && <Tooltip content={<CustomTooltip />} />}
             <Legend 
               verticalAlign="top" 
               align="right"
@@ -180,12 +191,12 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
             />
             
             {chartType === 'bar' ? (
-                <Bar yAxisId="right" dataKey={metric2} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} radius={[8, 8, 0, 0]} hide={hiddenMetrics.includes(metric2)} barSize={36} />
+                <Bar yAxisId="right" dataKey={metric2} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} radius={[8, 8, 0, 0]} hide={hiddenMetrics.includes(metric2)} barSize={36} isAnimationActive={!isPrint} />
             ) : (
-                <Area yAxisId="right" type="monotone" dataKey={metric2} stroke={METRIC_CONFIG[metric2]?.color || '#ec4899'} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} fillOpacity={0.1} strokeWidth={5} hide={hiddenMetrics.includes(metric2)} />
+                <Area yAxisId="right" type="monotone" dataKey={metric2} stroke={METRIC_CONFIG[metric2]?.color || '#ec4899'} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} fillOpacity={0.1} strokeWidth={isPrint ? 3 : 5} hide={hiddenMetrics.includes(metric2)} isAnimationActive={!isPrint} />
             )}
             
-            <Line yAxisId="left" type="monotone" dataKey={metric1} stroke={METRIC_CONFIG[metric1]?.color || '#6366f1'} strokeWidth={6} dot={{ r: 5, strokeWidth: 4, fill: '#fff' }} activeDot={{ r: 9, strokeWidth: 4, fill: '#6366f1' }} hide={hiddenMetrics.includes(metric1)} />
+            <Line yAxisId="left" type="monotone" dataKey={metric1} stroke={METRIC_CONFIG[metric1]?.color || '#6366f1'} strokeWidth={isPrint ? 4 : 6} dot={{ r: 5, strokeWidth: 4, fill: '#fff' }} activeDot={{ r: 9, strokeWidth: 4, fill: '#6366f1' }} hide={hiddenMetrics.includes(metric1)} isAnimationActive={!isPrint} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

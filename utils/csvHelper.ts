@@ -1,3 +1,4 @@
+
 import Papa from 'papaparse';
 import { DataRow } from '../types';
 
@@ -64,8 +65,8 @@ const isSummaryRow = (row: DataRow): boolean => {
       const val = row[key];
       if (typeof val === 'string') {
           const lower = val.trim().toLowerCase();
-          // Added 'overall' to the exclusion list as per rules
-          if (['total', 'grand total', 'summary', 'kopā', 'results', 'all', 'overall'].includes(lower)) return true;
+          // Added 'kopsumma' to the exclusion list
+          if (['total', 'grand total', 'summary', 'kopā', 'kopsumma', 'results', 'all', 'overall'].includes(lower)) return true;
           if (lower.startsWith('results from')) return true;
       }
   }

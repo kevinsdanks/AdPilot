@@ -20,6 +20,40 @@ const extractGroundingSources = (response: GenerateContentResponse): GroundingSo
   return sources;
 };
 
+const repairJson = (json: string): string => {
+    let balanced = json;
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < json.length; i++) {
+        const char = json[i];
+        if (inString) {
+            if (char === '\\' && !escaped) {
+                escaped = true;
+            } else {
+                if (char === '"' && !escaped) inString = false;
+                escaped = false;
+            }
+        } else {
+            if (char === '"') inString = true;
+            else if (char === '{') stack.push('}');
+            else if (char === '[') stack.push(']');
+            else if (char === '}' || char === ']') {
+                if (stack.length > 0 && stack[stack.length - 1] === char) {
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    // Append missing closing braces in reverse order
+    while (stack.length > 0) {
+        balanced += stack.pop();
+    }
+    return balanced;
+};
+
 const safeParseJson = (text: string): any => {
     if (!text) return null;
 
@@ -30,65 +64,62 @@ const safeParseJson = (text: string): any => {
         // Continue
     }
 
-    // 2. Strip Markdown
     let cleaned = text;
+
+    // 2. Extract JSON block (Markdown or just braces)
     const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (markdownMatch) {
         cleaned = markdownMatch[1];
     } else {
-        const firstBrace = text.indexOf('{');
-        const firstBracket = text.indexOf('[');
-        let start = -1;
-        if (firstBrace !== -1 && firstBracket !== -1) start = Math.min(firstBrace, firstBracket);
-        else if (firstBrace !== -1) start = firstBrace;
-        else if (firstBracket !== -1) start = firstBracket;
-
-        const lastBrace = text.lastIndexOf('}');
-        const lastBracket = text.lastIndexOf(']');
-        let end = -1;
-        if (lastBrace !== -1 && lastBracket !== -1) end = Math.max(lastBrace, lastBracket);
-        else if (lastBrace !== -1) end = lastBrace;
-        else if (lastBracket !== -1) end = lastBracket;
-
-        if (start !== -1 && end !== -1) {
-            cleaned = text.substring(start, end + 1);
+        const firstBrace = cleaned.indexOf('{');
+        // We use lastIndexOf to try and get the full object, but if truncated, we might need to repair
+        const lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace !== -1) {
+            // If we found a closing brace, use it. If not (truncated), take everything after first brace.
+            if (lastBrace !== -1 && lastBrace > firstBrace) {
+                cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+            } else {
+                cleaned = cleaned.substring(firstBrace);
+            }
         }
     }
-    
-    // 3. Try parsing extracted
-    try {
-        return JSON.parse(cleaned);
-    } catch (e) {
-        // Continue
-    }
-    
-    // 4. Aggressive cleanup
-    try {
-        // Move control char removal to top to avoid interference
-        cleaned = cleaned.replace(/[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g, ""); 
 
+    // 3. Recursive cleanup strategy
+    try {
         // Remove comments
         cleaned = cleaned.replace(/^\s*\/\/.*$/gm, '');
         cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
-        
-        // Remove trailing commas
-        cleaned = cleaned.replace(/,\s*([\]}])/g, '$1'); 
-        
-        // Fix missing commas between objects
+
+        // Fix potential newlines in strings
+        cleaned = cleaned.replace(/[\u0000-\u001F]+/g, (match) => {
+             if (match === '\n' || match === '\r' || match === '\t') return match; 
+             return ''; 
+        });
+
+        // Remove trailing commas before closing braces/brackets
+        cleaned = cleaned.replace(/,(\s*[\]}])/g, '$1');
+
+        // Fix missing commas between objects: } { -> }, {
         cleaned = cleaned.replace(/}\s*{/g, '}, {');
         cleaned = cleaned.replace(/]\s*{/g, '], {');
         cleaned = cleaned.replace(/}\s*\[/g, '}, [');
-        
-        // Fix missing commas between properties
-        // Explicitly handle newline case first as it's most common
-        cleaned = cleaned.replace(/([0-9]|true|false|null|"|}|])\s*\n\s*"/g, '$1, "');
-        // Handle same-line missing commas
-        cleaned = cleaned.replace(/([0-9]|true|false|null|"|}|])\s+(?=")/g, '$1, ');
+
+        // Aggressively insert missing commas between properties/values
+        // Only if NOT followed by comma already.
+        // Matches: value ending (digit, quote, bool, null, brace, bracket) followed by whitespace, then a quote (start of key)
+        cleaned = cleaned.replace(/([0-9]|true|false|null|"|}|])\s+(?=")/g, '$1,');
 
         return JSON.parse(cleaned);
     } catch (e) {
-        console.error("JSON Parse Failed Final Attempt:", e);
-        return null;
+        // 4. Try repairing truncated JSON
+        try {
+            const repaired = repairJson(cleaned);
+            return JSON.parse(repaired);
+        } catch (e2) {
+             console.error("JSON Parse Failed Final Attempt. Raw text length:", text.length, e2);
+             // Return null to allow the UI to handle the error state
+             return null; 
+        }
     }
 };
 
@@ -160,44 +191,42 @@ export const generateFocusGroup = async (inputs: { product: string; offer: strin
   return safeParseJson(response.text || "{}");
 };
 
-// Dataset Audit - Enforcing strict 3 cards per section and deep content
 export const analyzeDataset = async (dataset: Dataset, currency: string, language: AnalysisLanguage): Promise<AnalysisResult> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  // 1. Calculate Aggregated Metrics to force "Truth" into the prompt
   const mainData = dataset.files[0]?.data || [];
   const metrics = calculateAggregatedMetrics(mainData);
   
   const metricsContext = `
-  HARD DATA TRUTH (Do not hallucinate numbers different from these):
+  HARD DATA TRUTH (Do not hallucinate numbers):
   - Total Spend: ${metrics.totals.spend.toFixed(2)} ${currency}
-  - Total Conversions (Results/Leads): ${metrics.totals.conversions}
+  - Total Conversions: ${metrics.totals.conversions}
   - Blended CPA: ${metrics.totals.cpa.toFixed(2)} ${currency}
   - Blended ROAS: ${metrics.totals.roas.toFixed(2)}
   - Blended CTR: ${metrics.totals.ctr.toFixed(2)}%
   - Blended CPC: ${metrics.totals.cpc.toFixed(2)} ${currency}
   `;
 
-  // 2. Prepare Raw Data Context - 500 rows for granular analysis
+  // Limit rows to prevent context overflow and reduce JSON complexity risk. 
+  // Reduced to Top 75 to save tokens for the output.
   const rawDataContext = dataset.files.map(f => 
-    `FILE: ${f.name} (First 500 rows):\n${exportToCSV(f.data.slice(0, 500))}`
+    `FILE: ${f.name} (Top 75 rows):\n${exportToCSV(f.data.slice(0, 75))}`
   ).join('\n\n---\n\n');
 
-  // Define schema inline to decouple from other services
   const auditPointSchema = {
     type: Type.OBJECT,
     properties: {
       title: { type: Type.STRING },
-      text: { type: Type.STRING, description: "2-3 sentences explaining the insight from CSV data" },
-      impact: { type: Type.STRING, description: "Potential Gain/Improvement (e.g. Save 500€, +15 Leads)" },
+      text: { type: Type.STRING, description: "Insight description." },
+      impact: { type: Type.STRING, description: "Value AND Unit/Context. E.g. '+25 Leads', '-15% CPA', 'Save €500'." },
       confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
       expert_pillars: {
         type: Type.OBJECT,
         properties: {
-          observation: { type: Type.STRING, description: "Required. What does the CSV data show? 2-3 sentences." },
-          conclusion: { type: Type.STRING, description: "Required. What is the result? 2-3 sentences." },
-          justification: { type: Type.STRING, description: "Required. Why is this happening based on data? 2-3 sentences." },
-          recommendation: { type: Type.STRING, description: "Required. What to do next? 2-3 sentences." }
+          observation: { type: Type.STRING, description: "2 sentences max." },
+          conclusion: { type: Type.STRING, description: "2 sentences max." },
+          justification: { type: Type.STRING, description: "2 sentences max." },
+          recommendation: { type: Type.STRING, description: "2 sentences max." }
         },
         required: ["observation", "conclusion", "justification", "recommendation"]
       },
@@ -209,27 +238,28 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
             properties: {
               type: { type: Type.STRING, enum: ['bar_chart', 'line_chart', 'pie_chart', 'area_chart', 'funnel_chart', 'stacked_bar'] },
               title: { type: Type.STRING },
-              y_axis_label: { type: Type.STRING },
-              x_axis_label: { type: Type.STRING },
+              y_axis_label: { type: Type.STRING, description: "Label for Y axis." },
+              x_axis_label: { type: Type.STRING, description: "Label for X axis." },
               value_format: { type: Type.STRING, enum: ['currency', 'percent', 'number', 'float'] },
-              unit_symbol: { type: Type.STRING, description: "Required symbol (e.g. €, %, x). MUST be populated." },
+              unit_symbol: { type: Type.STRING },
               data: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
-                  properties: { label: { type: Type.STRING }, value: { type: Type.NUMBER }, color: { type: Type.STRING }, is_benchmark: { type: Type.BOOLEAN } }
+                  properties: { 
+                      label: { type: Type.STRING }, 
+                      value: { type: Type.NUMBER }, 
+                      color: { type: Type.STRING, description: "Hex code." }, 
+                      is_benchmark: { type: Type.BOOLEAN } 
+                  }
                 }
               }
             },
-            required: ["type", "title", "y_axis_label", "value_format", "unit_symbol", "data"]
+            required: ["type", "title", "y_axis_label", "x_axis_label", "value_format", "unit_symbol", "data"]
           },
           analysis_logic: {
             type: Type.OBJECT,
-            properties: { 
-               headline: { type: Type.STRING }, 
-               formula: { type: Type.STRING }, 
-               logic: { type: Type.STRING, description: "Explain the calculation used on the CSV data." } 
-            },
+            properties: { headline: { type: Type.STRING }, formula: { type: Type.STRING }, logic: { type: Type.STRING } },
             required: ["headline", "formula", "logic"]
           }
         },
@@ -242,7 +272,7 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview', 
     contents: `ROLE: Senior Ad Performance Auditor. 
-TASK: Execute an audit based EXCLUSIVELY on the provided CSV data.
+TASK: Audit provided CSV data.
 
 INPUT DATA:
 ${metricsContext}
@@ -251,21 +281,18 @@ RAW CSV DATA:
 ${rawDataContext}
 
 STRICT CONSTRAINTS:
-1. DATA SOURCE: FACTS MUST COME FROM CSV. Do not hallucinate campaigns not in the file.
-2. QUANTITY: GENERATE EXACTLY 3 ITEMS for 'performance_drivers', 3 for 'watch_outs_risks', and 3 for 'strategic_actions'. Total 9 cards.
-3. CONTENT DEPTH (CRITICAL): 
-   - The 'text' field on the card MUST be 2-3 sentences (approx 30-50 words) explaining the specific data pattern.
-   - The 'expert_pillars' (Observation, Conclusion, Justification, Recommendation) MUST each be 2-3 sentences deep.
-4. CHARTS:
-   - EVERY item must have a 'deep_dive.chart_config'.
-   - AXIS LABELS: You MUST provide specific 'x_axis_label', 'y_axis_label', and 'unit_symbol' (e.g. "€", "%") for every chart.
-   - UNIT SYMBOLS: Ensure 'unit_symbol' is always present (e.g. "%" for CTR, "€" for CPA).
-5. IMPACT: Calculate the POTENTIAL IMPROVEMENT. Do not just state current values. Use format like "Save €X", "+X Leads", "-X% CPA".
-6. ANALYSIS LOGIC: In 'analysis_logic', explain exactly which columns and rows were used to calculate the finding (e.g., "Filtered for Age=65+, Sum(Impressions) / Sum(Spend)").
-7. STRATEGIC ACTIONS: Ensure the 'strategic_actions' section is fully populated with actionable steps to improve performance based on the risks and drivers identified.
-8. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
-9. LIMIT CHART DATA: Maximum 12 data points per chart.
-10. SYNTAX: Ensure valid JSON. All properties must be comma-separated.
+1. QUANTITY: GENERATE EXACTLY 3 ITEMS for 'performance_drivers', 3 for 'watch_outs_risks', and 3 for 'strategic_actions'. Total 9 cards.
+2. CONTENT DEPTH:
+   - 'impact' field MUST include a Value AND Unit. Examples: "+45 Leads", "-€2.50 CPA", "2.5x ROAS", "Save €400". Do NOT provide bare numbers like "45".
+   - 'expert_pillars' MUST be concise (2 sentences max).
+3. CHARTS:
+   - Max 6 data points per chart to save tokens.
+   - Must have axis labels.
+4. JSON FORMATTING (CRITICAL):
+   - NO newlines or tabs inside strings.
+   - Use SINGLE QUOTES inside string values if needed.
+   - Ensure the output is valid JSON.
+5. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
 `,
     config: {
       maxOutputTokens: 8192,
@@ -333,7 +360,6 @@ export const askAdPilot = async (dataset: Dataset, question: string, currency: s
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const model = deepThinking ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
   
-  // Inject calculated metrics for Q&A as well to ensure accuracy
   const mainData = dataset.files[0]?.data || [];
   const metrics = calculateAggregatedMetrics(mainData);
   const metricsContext = `
@@ -344,8 +370,8 @@ export const askAdPilot = async (dataset: Dataset, question: string, currency: s
   ROAS: ${metrics.totals.roas.toFixed(2)}
   `;
 
-  // Increased context for Q&A
-  const context = dataset.files.map(f => `FILE: ${f.name} (First 300 rows):\n${exportToCSV(f.data.slice(0, 300))}`).join('\n\n---\n\n');
+  // Reduced context for chat as well to prevent overload
+  const context = dataset.files.map(f => `FILE: ${f.name} (First 50 rows):\n${exportToCSV(f.data.slice(0, 50))}`).join('\n\n---\n\n');
   
   const response = await ai.models.generateContent({
     model,
@@ -362,44 +388,11 @@ QUESTION: ${question}`,
 export const runAiSimulation = async (inputs: SimulationInputs, language: AnalysisLanguage): Promise<SimulationResult> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
-  // Detect Recruitment Context
-  const isRecruitment = inputs.product.toLowerCase().includes('job') || 
-                        inputs.product.toLowerCase().includes('hiring') || 
-                        inputs.product.toLowerCase().includes('recruitment') ||
-                        inputs.businessType === 'Lead Generation';
-
-  const prompt = `ROLE: Senior Media Strategy Architect (Consulting Grade).
-TASK: Create a 30-day client-ready acquisition strategy.
+  const prompt = `ROLE: Senior Media Strategy Architect.
+TASK: Create a 30-day strategy.
 INPUTS: Product: ${inputs.product}, Market: ${inputs.location}, Goal: ${inputs.goal}, Budget: ${inputs.budget} EUR.
 LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
-
-CRITICAL GUIDELINES:
-1. HEADLINE: Must follow format "30-Day [Topic] Plan — [Location]". Example: "30-Day Hiring Plan — Latvia" or "30-Day Lead Acquisition Plan — Riga". NO "Sprint" or internal jargon.
-2. MARKET INTEL: 
-   - 'search_demand_rating' must match description.
-   - 'search_demand' text MUST include estimated volume range (e.g., "8k-15k monthly searches").
-   - "Interpretation" field is the "So What?".
-   - "Implication" field is the tactical action.
-3. BENCHMARKS:
-   - ${isRecruitment ? "Use 'Cost per Application' (CPA) and 'Qualified Application Rate'." : "Use CPA and Lead CVR."}
-   - Contextualize benchmarks (e.g., "Latvia Recruitment Auction Median").
-4. STRATEGY:
-   - 'dynamic_adjustment_scenario' MUST be a 2-step logic: "Step 1: Fix Search negatives. Step 2: If still high, shift to Retargeting."
-   - 'risk_mitigation': Use specific, non-discriminatory gates (e.g., "Qualification Questions", "Location Gate").
-   - 'funnel_split_justification': Must specify budget math (e.g., "€${inputs.budget} total. 60% Meta for volume, 40% Search for intent.").
-5. METRICS:
-   - ${isRecruitment ? "Replace 'Conversions' with 'Applications' everywhere." : "Use 'Conversions' or 'Leads'."}
-   - If ROAS is not applicable (like recruitment), use "Quality Score" or "Interview Rate" instead.
-6. CREATIVE:
-   - 'value_props': Must be candidate-centric if hiring (e.g. "Net salary", "Shift flexibility"), not employer-centric.
-   - 'anti_messaging': Must include "Bait-and-switch" warnings.
-   - 'visual_direction' -> Rename to "Creative Direction" in output text if possible.
-   - Guardrails: PROVIDE AT LEAST 5 ITEMS.
-7. ROADMAP:
-   - W2/W3 metrics must be specific (e.g. "Form Completion Rate", not generic "Bounce Rate").
-   - W4 must include "CRM Feedback Loop".
-8. BREVITY: Keep strings dense and under 15 words where possible.
-9. VALID JSON ONLY.`;
+STRICT JSON OUTPUT.`;
   
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -414,7 +407,7 @@ CRITICAL GUIDELINES:
           executive_summary: {
             type: Type.OBJECT,
             properties: {
-              headline: { type: Type.STRING, description: "Professional strategy title" },
+              headline: { type: Type.STRING },
               summary: { type: Type.STRING },
               strategic_verdict: { type: Type.STRING },
               expected_outcome_summary: { type: Type.STRING },
@@ -427,8 +420,8 @@ CRITICAL GUIDELINES:
               search_demand: { type: Type.STRING },
               search_demand_rating: { type: Type.STRING, enum: ["Low", "Medium", "High"] },
               search_intent_split: { type: Type.OBJECT, properties: { high: { type: Type.NUMBER }, mid: { type: Type.NUMBER }, info: { type: Type.NUMBER } } },
-              interpretation: { type: Type.STRING, description: "The 'So What?' insight" },
-              implication: { type: Type.STRING, description: "The tactical implication" },
+              interpretation: { type: Type.STRING },
+              implication: { type: Type.STRING },
               benchmarks: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { name: { type: Type.STRING }, value: { type: Type.STRING }, context: { type: Type.STRING } } } }
             }
           },

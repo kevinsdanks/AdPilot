@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-/* Update import to include Modality */
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { Mic, MicOff, Volume2, VolumeX, Sparkles, X, Loader2, Brain, ShieldCheck } from 'lucide-react';
 import { AnalysisLanguage, Dataset } from '../types';
 import { exportToCSV } from '../utils/csvHelper';
+import { calculateAggregatedMetrics } from '../utils/analyticsHelper';
 
 interface LiveAudioConsoleProps {
   language: AnalysisLanguage;
@@ -101,8 +101,30 @@ export const LiveAudioConsole: React.FC<LiveAudioConsoleProps> = ({ language, da
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      // Limit context to avoid Oversized Request errors in Live API
-      const datasetContext = dataset ? dataset.files.map(f => `DIMENSION: ${f.name} DATA:\n${exportToCSV(f.data.slice(0, 15))}`).join('\n') : 'No data.';
+      // Construct Data Context
+      let contextPrompt = 'No dataset loaded.';
+      if (dataset && dataset.files.length > 0) {
+          const mainData = dataset.files[0]?.data || [];
+          const metrics = calculateAggregatedMetrics(mainData);
+          
+          const metricsSummary = `
+          KEY METRICS (TRUTH):
+          - Total Spend: ${metrics.totals.spend.toFixed(2)}
+          - Leads/Conversions: ${metrics.totals.conversions}
+          - Blended CPA: ${metrics.totals.cpa.toFixed(2)}
+          - ROAS: ${metrics.totals.roas.toFixed(2)}
+          - CTR: ${metrics.totals.ctr.toFixed(2)}%
+          - CPM: ${metrics.totals.cpm.toFixed(2)}
+          `;
+
+          // Limit rows to ensure we don't hit hard limits for system instruction, but give enough context
+          const rawData = dataset.files.map(f => `FILE: ${f.name} (Top 50 rows)\n${exportToCSV(f.data.slice(0, 50))}`).join('\n\n');
+          
+          contextPrompt = `DATA CONTEXT:\n${metricsSummary}\n\nRAW DATA SAMPLE:\n${rawData}`;
+      }
+
+      // Truncate if too long to prevent connection issues
+      const finalSystemInstruction = `${t.instruction}\n\n${contextPrompt}`.substring(0, 25000);
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
@@ -158,12 +180,11 @@ export const LiveAudioConsole: React.FC<LiveAudioConsoleProps> = ({ language, da
           onclose: () => setIsActive(false),
         },
         config: {
-          /* Fixed type error by using Modality.AUDIO instead of string */
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } }, // Using standard voice name
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } },
           },
-          systemInstruction: `${t.instruction} Context: ${datasetContext.substring(0, 1000)}`,
+          systemInstruction: finalSystemInstruction,
           outputAudioTranscription: {},
           inputAudioTranscription: {},
         }

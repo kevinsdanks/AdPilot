@@ -64,7 +64,6 @@ export const SimulationResults: React.FC<SimulationResultsProps> = ({ result, in
     forecast: 'KPI prognožu scenāriji',
     creative: 'Radošā komunikācija',
     roadmap: '30 dienu optimizācijas ceļvedis',
-    viewDashboard: 'Atvērt sinhronizācijas konsoli',
     sources: 'Tirgus izpētes avoti',
     logic: 'Campaign Architecture',
     verdict: 'Stratēģiskais Verdikts',
@@ -81,7 +80,6 @@ export const SimulationResults: React.FC<SimulationResultsProps> = ({ result, in
     guardrails: 'Komunikācijas aizliegumi',
     decision: 'Lēmuma punkts',
     implication: 'Implication',
-    launchConsole: 'Palaist Konsoli'
   } : {
     execSummary: 'Executive Summary',
     marketIntel: 'Market & Demand Intelligence',
@@ -90,7 +88,6 @@ export const SimulationResults: React.FC<SimulationResultsProps> = ({ result, in
     forecast: 'KPI Forecast Scenarios',
     creative: 'Creative & Messaging Strategy',
     roadmap: '30-Day Optimization Roadmap',
-    viewDashboard: 'Launch Sync Console',
     sources: 'Market Research Sources',
     logic: 'Campaign Architecture',
     verdict: 'Strategic Verdict',
@@ -107,7 +104,6 @@ export const SimulationResults: React.FC<SimulationResultsProps> = ({ result, in
     guardrails: 'Messaging Guardrails',
     decision: 'Decision Point',
     implication: 'Implication',
-    launchConsole: 'Launch Full Sync Console'
   };
 
   const isRecruitment = inputs.product.toLowerCase().includes('job') || inputs.product.toLowerCase().includes('hiring') || inputs.goal.includes('Leads');
@@ -144,10 +140,6 @@ export const SimulationResults: React.FC<SimulationResultsProps> = ({ result, in
               </div>
             </div>
           </div>
-          
-          <button onClick={onViewAudit} className="w-full py-5 bg-slate-900 text-white font-black rounded-[2rem] text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-indigo-600 transition-all shadow-xl shadow-slate-200">
-            <LayoutDashboard className="w-4 h-4" /> {t.viewDashboard}
-          </button>
         </div>
       </div>
 
@@ -509,22 +501,6 @@ export const SimulationResults: React.FC<SimulationResultsProps> = ({ result, in
               ))}
            </div>
         </Card>
-
-        {/* FOOTER ACTION */}
-        <div className="bg-white border border-slate-200 rounded-[3.5rem] p-12 shadow-sm flex flex-col md:flex-row items-center justify-between gap-10">
-           <div className="flex items-center gap-6">
-              <div className="w-20 h-20 bg-indigo-600 rounded-[2rem] flex items-center justify-center shadow-xl shadow-indigo-100">
-                <Rocket className="w-10 h-10 text-white" />
-              </div>
-              <div className="text-left">
-                <h4 className="text-2xl font-black text-slate-900 mb-2">Execute & Replace Assumptions</h4>
-                <p className="text-slate-500 font-medium text-lg leading-tight">Sync your real ad account to replace modelled data with real-time performance audit.</p>
-              </div>
-           </div>
-           <button onClick={onViewAudit} className="px-12 py-6 bg-slate-900 text-white font-black rounded-[2.5rem] text-[11px] uppercase tracking-[0.2em] shadow-2xl shadow-slate-200 hover:bg-indigo-600 transition-all flex items-center gap-4">
-             {t.launchConsole} <ArrowRight className="w-5 h-5" />
-           </button>
-        </div>
         
         <SourceList sources={result.sources} title={t.sources} />
       </div>
