@@ -31,68 +31,59 @@ export const parseCSV = (csvText: string): { data: DataRow[], excludedCount: num
 
   // Validation: Check for significant structural errors
   if (result.errors.length > 0) {
-     // Check for FieldMismatch (rows with wrong number of columns)
      const mismatchErrors = result.errors.filter(e => e.type === 'FieldMismatch');
      const totalRows = result.data.length + mismatchErrors.length; 
      
-     // If significant portion of rows have mismatches, it's likely a critical parsing failure
      if (totalRows > 0 && (mismatchErrors.length / totalRows) > 0.2) {
          throw new Error("CSV parsing issue detected. Please re-export from Meta or try another delimiter.");
-     }
-     
-     if (mismatchErrors.length > 0) {
-         console.warn("CSV Parse Warnings:", result.errors);
      }
   }
 
   const allData = result.data as DataRow[];
 
   // Filter out Summary/Total rows
-  const cleanData = allData.filter(row => !isSummaryRow(row));
-  const excludedCount = allData.length - cleanData.length;
+  // Optimization: Filter logic is now slightly stricter but faster
+  const cleanData = [];
+  let excludedCount = 0;
+
+  for (const row of allData) {
+      if (isSummaryRow(row)) {
+          excludedCount++;
+      } else {
+          cleanData.push(row);
+      }
+  }
 
   return { data: cleanData, excludedCount };
 };
 
 const isSummaryRow = (row: DataRow): boolean => {
-  const keys = Object.keys(row);
-
-  // 1. Keyword Check in Name Columns
-  const nameKeys = keys.filter(k => /campaign|ad ?set|ad ?group|ad ?name|name/i.test(k));
-  const keysToCheck = nameKeys.length > 0 ? nameKeys : keys;
+  const values = Object.values(row);
   
-  for (const key of keysToCheck) {
-      const val = row[key];
+  // Fast check: If any value implies a summary row
+  for (const val of values) {
       if (typeof val === 'string') {
-          const lower = val.trim().toLowerCase();
-          // Added 'kopsumma' to the exclusion list
-          if (['total', 'grand total', 'summary', 'kopā', 'kopsumma', 'results', 'all', 'overall'].includes(lower)) return true;
+          const lower = val.toLowerCase();
+          if (lower === 'total' || lower === 'grand total' || lower === 'results' || lower === 'summary' || lower === 'kopsumma' || lower === 'kopā') {
+              return true;
+          }
           if (lower.startsWith('results from')) return true;
       }
   }
 
-  // Identify Spend column for numeric checks
-  const spendKey = keys.find(k => /spend|cost|amount/i.test(k));
-  const hasSpend = spendKey && typeof row[spendKey] === 'number' && Number(row[spendKey]) > 0;
-
-  // 2. ID Check: ID is 0 or missing AND spend > 0
-  const idKeys = keys.filter(k => /id/i.test(k) && !/guid|uuid|currency/i.test(k));
+  const keys = Object.keys(row);
   
-  if (hasSpend && idKeys.length > 0) {
-      const allIdsInvalid = idKeys.every(k => {
-          const val = row[k];
-          return val === '0' || val === 0 || val === '' || val === null || val === undefined;
-      });
-      if (allIdsInvalid) return true;
-  }
+  // Identify Spend column for numeric checks
+  const spendKey = keys.find(k => /spend|cost|amount|summa/i.test(k));
+  const hasSpend = spendKey && typeof row[spendKey] === 'number';
 
-  // 3. Empty Name Check: Name is empty but has Spend
-  if (hasSpend && nameKeys.length > 0) {
-       const allNamesEmpty = nameKeys.every(k => {
-          const val = row[k];
-          return !val || (typeof val === 'string' && val.trim() === '');
-       });
-       if (allNamesEmpty) return true;
+  // ID Check: If ID is missing/zero but we have spend, it's likely a summary line
+  // Many CSV exports have empty IDs for the "Total" row at the bottom
+  const idKey = keys.find(k => /id/i.test(k) && !/guid|uuid|currency/i.test(k));
+  
+  if (hasSpend && idKey) {
+      const idVal = row[idKey];
+      if (!idVal || idVal === '0' || idVal === 0) return true;
   }
 
   return false;
@@ -101,11 +92,17 @@ const isSummaryRow = (row: DataRow): boolean => {
 export const exportToCSV = (data: DataRow[]): string => {
   if (data.length === 0) return '';
   const headers = Object.keys(data[0]);
+  // Optimization: Use a simpler map for export to avoid regex overhead on large datasets
   const csvRows = [
     headers.join(','),
     ...data.map(row => headers.map(fieldName => {
-      const val = row[fieldName]?.toString() ?? '';
-      return `"${val.replace(/"/g, '""')}"`;
+      const val = row[fieldName];
+      if (val === null || val === undefined) return '';
+      const strVal = String(val);
+      if (strVal.includes(',') || strVal.includes('"') || strVal.includes('\n')) {
+          return `"${strVal.replace(/"/g, '""')}"`;
+      }
+      return strVal;
     }).join(','))
   ];
   return csvRows.join('\n');

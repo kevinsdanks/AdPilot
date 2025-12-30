@@ -20,107 +20,109 @@ const extractGroundingSources = (response: GenerateContentResponse): GroundingSo
   return sources;
 };
 
-const repairJson = (json: string): string => {
-    let balanced = json;
-    const stack: string[] = [];
-    let inString = false;
-    let escaped = false;
-
-    for (let i = 0; i < json.length; i++) {
-        const char = json[i];
-        if (inString) {
-            if (char === '\\' && !escaped) {
-                escaped = true;
-            } else {
-                if (char === '"' && !escaped) inString = false;
-                escaped = false;
-            }
-        } else {
-            if (char === '"') inString = true;
-            else if (char === '{') stack.push('}');
-            else if (char === '[') stack.push(']');
-            else if (char === '}' || char === ']') {
-                if (stack.length > 0 && stack[stack.length - 1] === char) {
-                    stack.pop();
-                }
-            }
-        }
-    }
-
-    // Append missing closing braces in reverse order
-    while (stack.length > 0) {
-        balanced += stack.pop();
-    }
-    return balanced;
-};
-
-const safeParseJson = (text: string): any => {
+// Robust JSON Cleaner to handle Markdown fences and common LLM output issues
+const cleanAndParseJson = (text: string): any => {
     if (!text) return null;
+    
+    let cleaned = text.trim();
 
-    // 1. Try parsing as-is
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        // Continue
+    // 1. Remove Markdown code blocks (```json ... ```) and simple ``` wrapper
+    cleaned = cleaned.replace(/^```(json)?/i, '').replace(/```$/, '');
+    
+    // 2. Locate JSON root (Object or Array) to strip prologue/epilogue
+    const firstBrace = cleaned.indexOf('{');
+    const firstBracket = cleaned.indexOf('[');
+    
+    let startIdx = -1;
+    let endIdx = -1;
+    let isObj = false;
+
+    // Determine if we are looking for { or [ based on which comes first
+    if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+        startIdx = firstBrace;
+        isObj = true;
+    } else if (firstBracket !== -1) {
+        startIdx = firstBracket;
+        isObj = false;
     }
 
-    let cleaned = text;
-
-    // 2. Extract JSON block (Markdown or just braces)
-    const markdownMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    if (markdownMatch) {
-        cleaned = markdownMatch[1];
-    } else {
-        const firstBrace = cleaned.indexOf('{');
-        // We use lastIndexOf to try and get the full object, but if truncated, we might need to repair
+    if (startIdx !== -1) {
+        // Find corresponding last closer
         const lastBrace = cleaned.lastIndexOf('}');
-        if (firstBrace !== -1) {
-            // If we found a closing brace, use it. If not (truncated), take everything after first brace.
-            if (lastBrace !== -1 && lastBrace > firstBrace) {
-                cleaned = cleaned.substring(firstBrace, lastBrace + 1);
-            } else {
-                cleaned = cleaned.substring(firstBrace);
-            }
+        const lastBracket = cleaned.lastIndexOf(']');
+        
+        if (isObj && lastBrace !== -1 && lastBrace > startIdx) {
+            endIdx = lastBrace;
+        } else if (!isObj && lastBracket !== -1 && lastBracket > startIdx) {
+            endIdx = lastBracket;
+        }
+        
+        if (endIdx !== -1) {
+            cleaned = cleaned.substring(startIdx, endIdx + 1);
         }
     }
 
-    // 3. Recursive cleanup strategy
+    // 3. Attempt parse
     try {
-        // Remove comments
-        cleaned = cleaned.replace(/^\s*\/\/.*$/gm, '');
-        cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
-
-        // Fix potential newlines in strings
-        cleaned = cleaned.replace(/[\u0000-\u001F]+/g, (match) => {
-             if (match === '\n' || match === '\r' || match === '\t') return match; 
-             return ''; 
-        });
-
-        // Remove trailing commas before closing braces/brackets
-        cleaned = cleaned.replace(/,(\s*[\]}])/g, '$1');
-
-        // Fix missing commas between objects: } { -> }, {
-        cleaned = cleaned.replace(/}\s*{/g, '}, {');
-        cleaned = cleaned.replace(/]\s*{/g, '], {');
-        cleaned = cleaned.replace(/}\s*\[/g, '}, [');
-
-        // Aggressively insert missing commas between properties/values
-        // Only if NOT followed by comma already.
-        // Matches: value ending (digit, quote, bool, null, brace, bracket) followed by whitespace, then a quote (start of key)
-        cleaned = cleaned.replace(/([0-9]|true|false|null|"|}|])\s+(?=")/g, '$1,');
-
         return JSON.parse(cleaned);
     } catch (e) {
-        // 4. Try repairing truncated JSON
+        // 4. Repair Mode
         try {
-            const repaired = repairJson(cleaned);
-            return JSON.parse(repaired);
+            let fixed = cleaned;
+            // Remove comments //... and /* ... */
+            fixed = fixed.replace(/\/\/.*$/gm, '');
+            fixed = fixed.replace(/\/\*[\s\S]*?\*\//g, '');
+            
+            // Fix trailing commas before closing braces/brackets
+            fixed = fixed.replace(/,(\s*[\]}])/g, '$1');
+            
+            // Fix missing commas between elements.
+            // Strategy: Look for (End Token) + Space + (Start Token) and insert comma.
+            // We exclude t/f/n from lookahead for numbers/bools to avoid corrupting text like "1 friend" or "true love".
+            
+            // Case 1: Closing Brackets (Object/Array end) -> Any valid start token
+            // matches: } { | ] [ | } " | ] " | } 1 | ] true
+            fixed = fixed.replace(/([}\]])(\s+)(?=[{\["\d\-tfn])/g, '$1,$2');
+
+            // Case 2: String Quote end -> Any valid start token
+            // matches: " { | " [ | " " | " 1 | " true
+            fixed = fixed.replace(/(")(\s+)(?=[{\["\d\-tfn])/g, '$1,$2');
+
+            // Case 3: Number end -> Safe start tokens (Quote, Brace, Bracket, Number, Minus)
+            // Excludes t/f/n to protect text like "I have 1 true friend" inside a string (if regex matches wrong context)
+            fixed = fixed.replace(/(\d)(\s+)(?=[{\["\d\-])/g, '$1,$2');
+
+            // Case 4: Boolean/Null end -> Safe start tokens
+            fixed = fixed.replace(/(true|false|null)(\s+)(?=[{\["\d\-])/g, '$1,$2');
+
+            return JSON.parse(fixed);
         } catch (e2) {
-             console.error("JSON Parse Failed Final Attempt. Raw text length:", text.length, e2);
-             // Return null to allow the UI to handle the error state
-             return null; 
+            console.error("JSON Parsing Failed:", e2);
+            // console.log("Failed Text Snippet:", cleaned.substring(0, 500) + "...");
+            return null;
         }
     }
+};
+
+// Helper to strip URLs and technical IDs to save tokens and reduce 'unexpected characters' errors
+const sanitizeDataForContext = (data: DataRow[]): DataRow[] => {
+    return data.map(row => {
+        const cleanRow: DataRow = {};
+        Object.keys(row).forEach(key => {
+            const lowerKey = key.toLowerCase();
+            // Skip URLs, Images, technical IDs (except Ad ID/Name)
+            if (lowerKey.includes('url') || lowerKey.includes('thumbnail') || lowerKey.includes('image') || lowerKey.includes('video') || (lowerKey.includes('id') && !lowerKey.includes('ad') && !lowerKey.includes('name'))) {
+                return;
+            }
+            const val = row[key];
+            // Skip long strings that look like URLs or base64
+            if (typeof val === 'string') {
+                if (val.startsWith('http') || val.startsWith('data:') || val.length > 200) return;
+            }
+            cleanRow[key] = val;
+        });
+        return cleanRow;
+    });
 };
 
 export const analyzeAdCreative = async (base64Image: string, mimeType: string, context: { product: string; audience: string }, language: AnalysisLanguage): Promise<CreativeAuditResult> => {
@@ -130,7 +132,7 @@ export const analyzeAdCreative = async (base64Image: string, mimeType: string, c
     contents: {
       parts: [
         { inlineData: { data: base64Image, mimeType } },
-        { text: `ROLE: Senior Creative Director. Analyze this ad: Product: ${context.product}, Audience: ${context.audience}. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.` }
+        { text: `ROLE: Senior Creative Director. Analyze this ad: Product: ${context.product}, Audience: ${context.audience}. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}. STRICT JSON OUTPUT. Ensure all properties are comma-separated.` }
       ]
     },
     config: {
@@ -155,14 +157,14 @@ export const analyzeAdCreative = async (base64Image: string, mimeType: string, c
       }
     }
   });
-  return safeParseJson(response.text || "{}");
+  return cleanAndParseJson(response.text || "{}");
 };
 
 export const generateFocusGroup = async (inputs: { product: string; offer: string; audience: string }, language: AnalysisLanguage): Promise<FocusGroupResult> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: `ROLE: Market Research Psychologist. Evaluate: Product: ${inputs.product}, Offer: ${inputs.offer}, Audience: ${inputs.audience}. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.`,
+    contents: `ROLE: Market Research Psychologist. Evaluate: Product: ${inputs.product}, Offer: ${inputs.offer}, Audience: ${inputs.audience}. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}. STRICT JSON OUTPUT. Ensure all array items and object properties are comma-separated.`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -188,7 +190,7 @@ export const generateFocusGroup = async (inputs: { product: string; offer: strin
       }
     }
   });
-  return safeParseJson(response.text || "{}");
+  return cleanAndParseJson(response.text || "{}");
 };
 
 export const analyzeDataset = async (dataset: Dataset, currency: string, language: AnalysisLanguage): Promise<AnalysisResult> => {
@@ -200,33 +202,35 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
   const metricsContext = `
   HARD DATA TRUTH (Do not hallucinate numbers):
   - Total Spend: ${metrics.totals.spend.toFixed(2)} ${currency}
-  - Total Conversions: ${metrics.totals.conversions}
+  - Total Conversions (Blended): ${metrics.totals.conversions}
+  - Total Purchases: ${metrics.totals.purchases} (CPA: ${metrics.totals.costPerPurchase.toFixed(2)})
+  - Total Leads: ${metrics.totals.leads} (CPL: ${metrics.totals.costPerLead.toFixed(2)})
   - Blended CPA: ${metrics.totals.cpa.toFixed(2)} ${currency}
   - Blended ROAS: ${metrics.totals.roas.toFixed(2)}
-  - Blended CTR: ${metrics.totals.ctr.toFixed(2)}%
-  - Blended CPC: ${metrics.totals.cpc.toFixed(2)} ${currency}
   `;
 
-  // Limit rows to prevent context overflow and reduce JSON complexity risk. 
-  // Reduced to Top 75 to save tokens for the output.
-  const rawDataContext = dataset.files.map(f => 
-    `FILE: ${f.name} (Top 75 rows):\n${exportToCSV(f.data.slice(0, 75))}`
-  ).join('\n\n---\n\n');
+  // Sanitize and limit context to avoid token limits and "unexpected character" errors from binary/url data
+  const rawDataContext = dataset.files.map(f => {
+    const cleanData = sanitizeDataForContext(f.data.slice(0, 40));
+    return `FILE: ${f.name} (Top 40 rows):\n${exportToCSV(cleanData)}`;
+  }).join('\n\n---\n\n');
+
+  const fileNames = dataset.files.map(f => f.name).join(', ');
 
   const auditPointSchema = {
     type: Type.OBJECT,
     properties: {
       title: { type: Type.STRING },
       text: { type: Type.STRING, description: "Insight description." },
-      impact: { type: Type.STRING, description: "Value AND Unit/Context. E.g. '+25 Leads', '-15% CPA', 'Save €500'." },
+      impact: { type: Type.STRING, description: "Value AND Unit. E.g. '+25 Leads'." },
       confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
       expert_pillars: {
         type: Type.OBJECT,
         properties: {
-          observation: { type: Type.STRING, description: "2 sentences max." },
-          conclusion: { type: Type.STRING, description: "2 sentences max." },
-          justification: { type: Type.STRING, description: "2 sentences max." },
-          recommendation: { type: Type.STRING, description: "2 sentences max." }
+          observation: { type: Type.STRING, description: "MUST be 2-3 sentences long detailed observation." },
+          conclusion: { type: Type.STRING, description: "MUST be 2-3 sentences long detailed conclusion." },
+          justification: { type: Type.STRING, description: "MUST be 2-3 sentences long justification with data." },
+          recommendation: { type: Type.STRING, description: "Actionable advice." }
         },
         required: ["observation", "conclusion", "justification", "recommendation"]
       },
@@ -236,11 +240,11 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
           chart_config: {
             type: Type.OBJECT,
             properties: {
-              type: { type: Type.STRING, enum: ['bar_chart', 'line_chart', 'pie_chart', 'area_chart', 'funnel_chart', 'stacked_bar'] },
+              type: { type: Type.STRING, enum: ['bar_chart', 'line_chart', 'pie_chart'] },
               title: { type: Type.STRING },
-              y_axis_label: { type: Type.STRING, description: "Label for Y axis." },
-              x_axis_label: { type: Type.STRING, description: "Label for X axis." },
-              value_format: { type: Type.STRING, enum: ['currency', 'percent', 'number', 'float'] },
+              y_axis_label: { type: Type.STRING },
+              x_axis_label: { type: Type.STRING },
+              value_format: { type: Type.STRING, enum: ['currency', 'percent', 'number'] },
               unit_symbol: { type: Type.STRING },
               data: {
                 type: Type.ARRAY,
@@ -249,50 +253,50 @@ export const analyzeDataset = async (dataset: Dataset, currency: string, languag
                   properties: { 
                       label: { type: Type.STRING }, 
                       value: { type: Type.NUMBER }, 
-                      color: { type: Type.STRING, description: "Hex code." }, 
+                      color: { type: Type.STRING }, 
                       is_benchmark: { type: Type.BOOLEAN } 
                   }
                 }
               }
             },
-            required: ["type", "title", "y_axis_label", "x_axis_label", "value_format", "unit_symbol", "data"]
+            required: ["type", "title", "data", "value_format"]
           },
           analysis_logic: {
             type: Type.OBJECT,
             properties: { headline: { type: Type.STRING }, formula: { type: Type.STRING }, logic: { type: Type.STRING } },
-            required: ["headline", "formula", "logic"]
+            required: ["headline", "logic"]
           }
         },
         required: ["chart_config", "analysis_logic"]
       }
     },
-    required: ["title", "text", "impact", "confidence", "expert_pillars", "deep_dive"]
+    required: ["title", "text", "confidence", "expert_pillars", "deep_dive"]
   };
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview', 
-    contents: `ROLE: Senior Ad Performance Auditor. 
-TASK: Audit provided CSV data.
+    model: 'gemini-3-pro-preview', // Upgraded to Pro for complex reasoning and schema adherence
+    contents: `ROLE: Senior Ad Performance Auditor & Marketing Scientist. 
+TASK: Audit provided CSV data using multi-level hierarchy analysis.
 
 INPUT DATA:
 ${metricsContext}
 
+FILES INCLUDED IN ANALYSIS: ${fileNames}
+
 RAW CSV DATA:
 ${rawDataContext}
 
-STRICT CONSTRAINTS:
-1. QUANTITY: GENERATE EXACTLY 3 ITEMS for 'performance_drivers', 3 for 'watch_outs_risks', and 3 for 'strategic_actions'. Total 9 cards.
-2. CONTENT DEPTH:
-   - 'impact' field MUST include a Value AND Unit. Examples: "+45 Leads", "-€2.50 CPA", "2.5x ROAS", "Save €400". Do NOT provide bare numbers like "45".
-   - 'expert_pillars' MUST be concise (2 sentences max).
-3. CHARTS:
-   - Max 6 data points per chart to save tokens.
-   - Must have axis labels.
-4. JSON FORMATTING (CRITICAL):
-   - NO newlines or tabs inside strings.
-   - Use SINGLE QUOTES inside string values if needed.
-   - Ensure the output is valid JSON.
-5. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
+STRICT INSTRUCTIONS:
+1. **Funnel Analysis**: Identify bottlenecks.
+2. **Creative Fatigue**: Look for high frequency + dropping CTR.
+3. GENERATE EXACTLY 3 items per grid section.
+4. GENERATE 3 "suggested_questions" that a user might ask about this specific data.
+5. **Output must be valid JSON**. Ensure all array elements and properties are comma-separated. No markdown code blocks. Do not wrap in \`\`\`.
+6. **Detailed Pillars**: Observation, Conclusion, and Justification MUST be 2-3 sentences each.
+7. **Chart Units**: Use 'value_format' (currency/percent) correctly in deep_dive.
+8. LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
+9. **Scoring**: Provide \`score.value\` on a 0-100 scale (e.g. 78, not 7.8). Breakdown scores also 0-100.
+10. **JSON Integrity**: Double-check that all items in lists (arrays) and all properties in objects are separated by commas.
 `,
     config: {
       maxOutputTokens: 8192,
@@ -301,22 +305,11 @@ STRICT CONSTRAINTS:
         type: Type.OBJECT,
         properties: {
           primary_kpi: { type: Type.STRING },
-          key_metrics: {
-            type: Type.OBJECT,
-            properties: {
-              spend: { type: Type.NUMBER }, revenue: { type: Type.NUMBER }, impressions: { type: Type.NUMBER }, clicks: { type: Type.NUMBER },
-              conversions: { type: Type.NUMBER }, ctr: { type: Type.NUMBER }, cpc: { type: Type.NUMBER }, cpa: { type: Type.NUMBER },
-              roas: { type: Type.NUMBER }, cpm: { type: Type.NUMBER }
-            }
-          },
           score: {
             type: Type.OBJECT,
             properties: {
               value: { type: Type.NUMBER },
-              rating: { type: Type.STRING, enum: ["Excellent", "Good", "Average", "Critical"] },
-              drivers: { type: Type.ARRAY, items: { type: Type.STRING } },
-              version: { type: Type.STRING },
-              confidence: { type: Type.STRING, enum: ["High", "Medium", "Low"] },
+              rating: { type: Type.STRING },
               breakdown: {
                 type: Type.OBJECT,
                 properties: { performance: { type: Type.NUMBER }, delivery: { type: Type.NUMBER }, creative: { type: Type.NUMBER }, structure: { type: Type.NUMBER } }
@@ -341,12 +334,12 @@ STRICT CONSTRAINTS:
             required: ["verdict", "grid"]
           }
         },
-        required: ["primary_kpi", "key_metrics", "score", "detailed_verdict"]
+        required: ["score", "detailed_verdict", "suggested_questions"]
       }
     }
   });
 
-  const structuredData = safeParseJson(response.text || "{}");
+  const structuredData = cleanAndParseJson(response.text || "{}");
   const sources = extractGroundingSources(response);
   if (structuredData) structuredData.sources = sources;
 
@@ -362,23 +355,20 @@ export const askAdPilot = async (dataset: Dataset, question: string, currency: s
   
   const mainData = dataset.files[0]?.data || [];
   const metrics = calculateAggregatedMetrics(mainData);
-  const metricsContext = `
-  TRUTH METRICS:
-  Total Spend: ${metrics.totals.spend.toFixed(2)}
-  Total Conversions: ${metrics.totals.conversions}
-  CPA: ${metrics.totals.cpa.toFixed(2)}
-  ROAS: ${metrics.totals.roas.toFixed(2)}
-  `;
+  const metricsContext = `Total Spend: ${metrics.totals.spend.toFixed(2)}`;
 
-  // Reduced context for chat as well to prevent overload
-  const context = dataset.files.map(f => `FILE: ${f.name} (First 50 rows):\n${exportToCSV(f.data.slice(0, 50))}`).join('\n\n---\n\n');
+  // Sanitize context for chat as well
+  const context = dataset.files.map(f => {
+      const clean = sanitizeDataForContext(f.data.slice(0, 50));
+      return `FILE: ${f.name} (First 50 rows):\n${exportToCSV(clean)}`;
+  }).join('\n\n---\n\n');
   
   const response = await ai.models.generateContent({
     model,
-    contents: `ROLE: Senior Ad Scientist. Answer using the dataset.
+    contents: `ROLE: Senior Ad Scientist.
 LANGUAGE: ${language === 'LV' ? 'Latvian' : 'English'}.
-CONTEXT METRICS: ${metricsContext}
-DATASET: ${context}
+METRICS: ${metricsContext}
+DATA: ${context}
 QUESTION: ${question}`,
     config: { tools: [{ googleSearch: {} }] }
   });
@@ -418,7 +408,7 @@ STRICT JSON OUTPUT.`;
             type: Type.OBJECT,
             properties: {
               search_demand: { type: Type.STRING },
-              search_demand_rating: { type: Type.STRING, enum: ["Low", "Medium", "High"] },
+              search_demand_rating: { type: Type.STRING },
               search_intent_split: { type: Type.OBJECT, properties: { high: { type: Type.NUMBER }, mid: { type: Type.NUMBER }, info: { type: Type.NUMBER } } },
               interpretation: { type: Type.STRING },
               implication: { type: Type.STRING },
@@ -458,5 +448,5 @@ STRICT JSON OUTPUT.`;
       }
     }
   });
-  return { ...safeParseJson(response.text || "{}"), sources: extractGroundingSources(response) };
+  return { ...cleanAndParseJson(response.text || "{}"), sources: extractGroundingSources(response) };
 };

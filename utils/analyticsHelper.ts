@@ -80,8 +80,9 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
     };
 
     if (!data || data.length === 0) {
+        // Return zeros
         return {
-            totals: { spend: 0, revenue: 0, impressions: 0, clicks: 0, conversions: 0, ctr: 0, cpc: 0, cpa: 0, roas: 0, cpm: 0 },
+            totals: { spend: 0, revenue: 0, impressions: 0, clicks: 0, conversions: 0, ctr: 0, cpc: 0, cpa: 0, roas: 0, cpm: 0, purchases: 0, costPerPurchase: 0, leads: 0, costPerLead: 0, frequency: 0, linkClicks: 0, landingPageViews: 0 },
             trends: [],
             waste: { amount: 0, count: 0, percentage: 0, entity: 'entities' },
             score: { 
@@ -100,30 +101,60 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
     }
 
     const columns = Object.keys(data[0]);
-    // Added Latvian translation patterns
+    
+    // Core Metrics
     const spendKey = findKey(columns, [/^amount spent/i, /^spend$/i, /^cost$/i, /^iztērētā summa$/i, /^summa$/i]);
     const impKey = findKey(columns, [/^impressions$/i, /^imps$/i, /^rādījumi$/i]);
     const clicksKey = findKey(columns, [/^clicks \(all\)$/i, /^clicks$/i, /^link clicks$/i, /^klikšķi$/i, /^klikšķi \(visi\)$/i]);
-    const convKey = findKey(columns, [/^results$/i, /^leads?$/i, /^website leads?$/i, /^purchases?$/i, /^conversions?$/i, /^total conversions$/i, /^rezultāti$/i]);
-    const revKey = findKey(columns, [/purchase.*value/i, /conversion.*value/i, /^revenue$/i, /^total value$/i, /reklāmguvumu vērtība/i]);
+    const linkClicksKey = findKey(columns, [/^link clicks$/i, /^klikšķi uz saites$/i]);
     const freqKey = findKey(columns, [/^frequency$/i, /^biežums$/i]);
+    const revKey = findKey(columns, [/purchase.*value/i, /conversion.*value/i, /^revenue$/i, /^total value$/i, /reklāmguvumu vērtība/i]);
 
-    let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalConversions = 0, totalRevenue = 0, avgFreq = 0, rowCount = 0;
+    // Granular Conversion Keys
+    const purchaseKey = findKey(columns, [/^purchases$/i, /^pirkumi$/i, /^website purchases$/i]);
+    const leadsKey = findKey(columns, [/^leads$/i, /^potenciālie pirkumi$/i, /^website leads$/i, /^on-facebook leads$/i]);
+    // Fallback general result
+    const convKey = findKey(columns, [/^results$/i, /^conversions?$/i, /^total conversions$/i, /^rezultāti$/i]);
+
+    let totalSpend = 0, totalImpressions = 0, totalClicks = 0, totalLinkClicks = 0;
+    let totalPurchases = 0, totalLeads = 0, totalConversions = 0, totalRevenue = 0;
+    let avgFreq = 0, rowCount = 0;
+
     const dailyData: Record<string, any> = {};
 
     data.forEach(row => {
       const spend = spendKey ? parseNumber(row[spendKey]) : 0;
       const impressions = impKey ? parseNumber(row[impKey]) : 0;
       const clicks = clicksKey ? parseNumber(row[clicksKey]) : 0;
-      const conversions = convKey ? parseNumber(row[convKey]) : 0;
-      const revenue = revKey ? parseNumber(row[revKey]) : 0;
+      const linkClicks = linkClicksKey ? parseNumber(row[linkClicksKey]) : 0;
       const freq = freqKey ? parseNumber(row[freqKey]) : 1;
-
+      const revenue = revKey ? parseNumber(row[revKey]) : 0;
+      
+      const purchases = purchaseKey ? parseNumber(row[purchaseKey]) : 0;
+      const leads = leadsKey ? parseNumber(row[leadsKey]) : 0;
+      
+      // If distinct keys exist, sum them. If only generic 'Results' exist, use that.
+      // We want to avoid double counting if "Results" includes Purchases.
+      let genericConv = convKey ? parseNumber(row[convKey]) : 0;
+      
+      // Intelligence: If genericConv is used but specific keys exist, prioritise specific keys for totals
+      // but keep generic as fallback for "Total Conversions"
+      
       totalSpend += spend;
       totalImpressions += impressions;
       totalClicks += clicks;
-      totalConversions += conversions;
+      totalLinkClicks += linkClicks;
       totalRevenue += revenue;
+      totalPurchases += purchases;
+      totalLeads += leads;
+      
+      // Blended conversion count (prioritize specific signals if available)
+      if (purchases > 0 || leads > 0) {
+          totalConversions += (purchases + leads);
+      } else {
+          totalConversions += genericConv;
+      }
+
       avgFreq += freq;
       rowCount++;
 
@@ -137,22 +168,25 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
       if (dStr !== 'Unknown') {
           if (!dailyData[dStr]) dailyData[dStr] = { date: dStr, spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0 };
           dailyData[dStr].spend += spend;
-          dailyData[dStr].conversions += conversions;
+          dailyData[dStr].conversions += (purchases + leads > 0 ? purchases + leads : genericConv);
           dailyData[dStr].clicks += clicks;
           dailyData[dStr].impressions += impressions;
           dailyData[dStr].revenue += revenue;
       }
     });
 
+    // Derived Metrics
     const finalAvgFreq = rowCount > 0 ? avgFreq / rowCount : 1;
     const ctr = totalImpressions > 0 ? (totalClicks / totalImpressions) * 100 : 0;
     const cpa = totalConversions > 0 ? totalSpend / totalConversions : 0;
     const roas = totalSpend > 0 ? totalRevenue / totalSpend : 0;
     const cpc = totalClicks > 0 ? totalSpend / totalClicks : 0;
     const cpm = totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0;
+    
+    const costPerPurchase = totalPurchases > 0 ? totalSpend / totalPurchases : 0;
+    const costPerLead = totalLeads > 0 ? totalSpend / totalLeads : 0;
 
-    // --- NEW 4-PILLAR LOGIC ---
-
+    // --- SCORING LOGIC ---
     // 1. Performance Effectiveness (40%)
     let perfScore = totalConversions > 0 
         ? Math.min(100, Math.max(10, (SCORING_MODEL_V2.benchmarks.CPA / cpa) * 90))
@@ -180,14 +214,17 @@ export const calculateAggregatedMetrics = (data: DataRow[]): { totals: KeyMetric
         (structureScore * SCORING_MODEL_V2.weights.structure)
     );
 
-    // Global corrections for specific "Learning Limited" or low volume signals
     if (totalConversions < 10) finalBaseScore = Math.max(0, finalBaseScore - 15);
 
     const confidence = totalConversions > 15 ? 'High' : totalConversions > 5 ? 'Medium' : 'Low';
     const trendArray = Object.values(dailyData).sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     return {
-      totals: { spend: totalSpend, impressions: totalImpressions, clicks: totalClicks, conversions: totalConversions, revenue: totalRevenue, ctr, cpc, cpa, roas, cpm },
+      totals: { 
+          spend: totalSpend, impressions: totalImpressions, clicks: totalClicks, conversions: totalConversions, revenue: totalRevenue, 
+          ctr, cpc, cpa, roas, cpm,
+          purchases: totalPurchases, costPerPurchase, leads: totalLeads, costPerLead, frequency: finalAvgFreq, linkClicks: totalLinkClicks, landingPageViews: 0
+      },
       trends: trendArray,
       waste: { amount: 0, count: 0, percentage: 0, entity: 'ads' },
       score: { 

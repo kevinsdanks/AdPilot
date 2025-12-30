@@ -23,11 +23,41 @@ interface PerformanceChartProps {
 
 const METRIC_CONFIG: Record<string, { label: string, color: string, format: 'currency' | 'number' | 'percent' }> = {
   spend: { label: 'Spend', color: '#ec4899', format: 'currency' },
-  conversions: { label: 'Leads', color: '#6366f1', format: 'number' },
+  conversions: { label: 'Results', color: '#6366f1', format: 'number' },
   cpa: { label: 'CPA', color: '#f59e0b', format: 'currency' },
   cpc: { label: 'CPC', color: '#3b82f6', format: 'currency' },
   ctr: { label: 'CTR', color: '#06b6d4', format: 'percent' },
   cpm: { label: 'CPM', color: '#94a3b8', format: 'currency' }
+};
+
+// Robust date parser for various formats: YYYY-MM-DD, DD.MM.YYYY, MM/DD/YYYY, etc.
+const parseRobustDate = (dateStr: any): Date | null => {
+    if (!dateStr) return null;
+    const s = String(dateStr).trim();
+    
+    // 1. Try ISO / JS default
+    let d = new Date(s);
+    if (!isNaN(d.getTime())) return d;
+
+    // 2. Try European format DD.MM.YYYY
+    const partsDot = s.split('.');
+    if (partsDot.length === 3) {
+        // Assume DD.MM.YYYY
+        d = new Date(`${partsDot[2]}-${partsDot[1]}-${partsDot[0]}`);
+        if (!isNaN(d.getTime())) return d;
+    }
+
+    // 3. Try DD/MM/YYYY
+    const partsSlash = s.split('/');
+    if (partsSlash.length === 3) {
+       // Ambiguous, but try MM/DD/YYYY first (US), then DD/MM/YYYY
+       d = new Date(`${partsSlash[2]}-${partsSlash[0]}-${partsSlash[1]}`); // US assumption
+       if (!isNaN(d.getTime())) return d;
+       d = new Date(`${partsSlash[2]}-${partsSlash[1]}-${partsSlash[0]}`); // EU assumption
+       if (!isNaN(d.getTime())) return d;
+    }
+
+    return null;
 };
 
 export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, currency, goal, isPrint = false }) => {
@@ -42,23 +72,52 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
   }, [data]);
 
   const normalizedData = useMemo(() => {
-    return data.map(item => {
-      // Find possible keys for all configured metrics
-      const convKey = Object.keys(item).find(k => k.toLowerCase() === 'conversions' || k.toLowerCase() === 'leads' || k.toLowerCase() === 'results' || k.toLowerCase() === 'total conversions');
-      const spendKey = Object.keys(item).find(k => k.toLowerCase() === 'spend' || k.toLowerCase() === 'amount spent' || k.toLowerCase() === 'cost');
-      const impKey = Object.keys(item).find(k => k.toLowerCase() === 'impressions' || k.toLowerCase() === 'imps');
-      const clicksKey = Object.keys(item).find(k => k.toLowerCase() === 'clicks' || k.toLowerCase() === 'link clicks');
+    if (!data || data.length === 0) return [];
 
-      const spendValue = spendKey ? Number(item[spendKey] || 0) : 0;
-      const convValue = convKey ? Number(item[convKey] || 0) : 0;
-      const impValue = impKey ? Number(item[impKey] || 0) : 0;
-      const clicksValue = clicksKey ? Number(item[clicksKey] || 0) : 0;
-
-      const ctrValue = impValue > 0 ? (clicksValue / impValue) * 100 : Number(item.ctr || 0);
-      const cpaValue = convValue > 0 ? (spendValue / convValue) : Number(item.cpa || 0);
-      const cpcValue = clicksValue > 0 ? (spendValue / clicksValue) : Number(item.cpc || 0);
-      const cpmValue = impValue > 0 ? (spendValue / impValue) * 1000 : Number(item.cpm || 0);
+    return data.map((item, idx) => {
+      const keys = Object.keys(item);
       
+      const findVal = (regex: RegExp) => {
+          const key = keys.find(k => regex.test(k));
+          let val = key ? item[key] : 0;
+          if (typeof val === 'string') {
+             // Cleanup "1,200.00" or "€ 1200"
+             val = val.replace(/[^0-9.,-]/g, '');
+             val = parseFloat(val.replace(',', '')); // Simple replace, ideally use locale
+          }
+          return Number(val || 0);
+      };
+
+      // Robust matching for metrics (handles Meta API snake_case and CSV Title Case)
+      const spendValue = findVal(/^(spend|amount_spent|cost|summa|iztērētā)/i);
+      const convValue = findVal(/^(results|conversions|leads|purchases|rezultāti|actions)/i);
+      const impValue = findVal(/^(impressions|imps|rādījumi)/i);
+      const clicksValue = findVal(/^(clicks|link_clicks|klikšķi)/i);
+
+      // Calculations if not present in CSV
+      const ctrValue = findVal(/^ctr/i) || (impValue > 0 ? (clicksValue / impValue) * 100 : 0);
+      const cpaValue = findVal(/^(cpa|cost_per_result|cost_per_action)/i) || (convValue > 0 ? (spendValue / convValue) : 0);
+      const cpcValue = findVal(/^(cpc|cost_per_link_click)/i) || (clicksValue > 0 ? (spendValue / clicksValue) : 0);
+      const cpmValue = findVal(/^(cpm|cost_per_1000)/i) || (impValue > 0 ? (spendValue / impValue) * 1000 : 0);
+      
+      // Date Parsing Strategy
+      let dateLabel = `Row ${idx + 1}`;
+      let timestamp = idx;
+
+      // Find ANY key that looks like a date
+      const dateKey = keys.find(k => /date|day|starts|laiks|datums|time_range/i.test(k));
+      
+      if (dateKey && item[dateKey]) {
+          const parsed = parseRobustDate(item[dateKey]);
+          if (parsed) {
+              dateLabel = parsed.toISOString().split('T')[0];
+              timestamp = parsed.getTime();
+          } else {
+              // Fallback: use raw string
+              dateLabel = String(item[dateKey]);
+          }
+      }
+
       return {
         ...item,
         conversions: convValue,
@@ -67,9 +126,10 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
         cpc: cpcValue,
         ctr: ctrValue,
         cpm: cpmValue,
-        date: item.date || item.Date || item.starts || 'N/A'
+        date: dateLabel,
+        timestamp // Used for X-Axis scaling
       };
-    });
+    }).sort((a, b) => a.timestamp - b.timestamp);
   }, [data]);
 
   const toggleMetric = (e: any) => {
@@ -85,14 +145,13 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
     return val.toLocaleString();
   };
 
-  const formatDateLabel = (dateStr: string) => {
-    if (dateStr === 'N/A') return dateStr;
+  const formatDateLabel = (timestamp: number) => {
     try {
-      const date = new Date(dateStr);
-      if (isNaN(date.getTime())) return dateStr;
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) return ""; 
       return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(date);
     } catch (e) {
-      return dateStr;
+      return "";
     }
   };
 
@@ -102,7 +161,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
       <select 
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 font-extrabold hover:border-indigo-300 outline-none cursor-pointer shadow-sm transition-all"
+        className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-700 font-extrabold hover:border-indigo-300 outline-none cursor-pointer shadow-sm transition-all min-w-[120px]"
       >
         {availableMetrics.map(m => (
           <option key={m} value={m}>{METRIC_CONFIG[m]?.label || m}</option>
@@ -115,7 +174,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
     if (active && payload && payload.length) {
       const dataPoint = payload[0].payload;
       return (
-        <div className="bg-slate-900/95 p-6 rounded-[2rem] border border-white/10 shadow-2xl text-[11px] text-white text-left min-w-[240px] backdrop-blur-xl">
+        <div className="bg-slate-900/95 p-6 rounded-[2rem] border border-white/10 shadow-2xl text-[11px] text-white text-left min-w-[240px] backdrop-blur-xl z-50">
           <p className="font-black text-slate-400 mb-5 border-b border-white/10 pb-4 uppercase tracking-[0.2em]">{formatDateLabel(label)}</p>
           <div className="space-y-3.5">
             {availableMetrics.map(m => (
@@ -133,6 +192,19 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
     }
     return null;
   };
+
+  // If no data or only 1 point, still try to show something or a clear message
+  if (normalizedData.length === 0) {
+      return (
+          <div className="bg-white rounded-[3.5rem] border border-slate-100 p-12 mb-12 flex items-center justify-center min-h-[300px]">
+              <div className="text-center text-slate-400">
+                  <BarChartIcon className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                  <p className="font-bold text-sm">Insufficient data to generate chart.</p>
+                  <p className="text-[10px] mt-1">Ensure your dataset contains Date and Spend/Results columns.</p>
+              </div>
+          </div>
+      );
+  }
 
   return (
     <div className={`bg-white rounded-[3.5rem] border border-slate-100 shadow-sm p-12 mb-12 overflow-hidden ${isPrint ? 'h-[400px] p-0 border-0 shadow-none rounded-none mb-0' : ''}`}>
@@ -171,15 +243,20 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
           <ComposedChart data={normalizedData} margin={{ top: 20, right: 30, left: 20, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
             <XAxis 
-              dataKey="date" 
+              dataKey="timestamp" 
+              type="number"
+              domain={['dataMin', 'dataMax']}
+              scale="time"
               tick={{ fontSize: isPrint ? 12 : 11, fill: isPrint ? '#0f172a' : '#94a3b8', fontWeight: 900 }} 
               tickMargin={15} 
               axisLine={false} 
               tickLine={false}
               tickFormatter={formatDateLabel}
+              minTickGap={15} // Reduced further to prevent aggressive hiding
+              interval="preserveStartEnd" // Forces start and end dates to show
             />
-            <YAxis yAxisId="left" tick={{ fontSize: isPrint ? 12 : 11, fill: '#6366f1', fontWeight: 900 }} axisLine={false} tickLine={false} />
-            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: isPrint ? 12 : 11, fill: '#ec4899', fontWeight: 900 }} axisLine={false} tickLine={false} />
+            <YAxis yAxisId="left" tick={{ fontSize: isPrint ? 12 : 11, fill: '#6366f1', fontWeight: 900 }} axisLine={false} tickLine={false} tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val} />
+            <YAxis yAxisId="right" orientation="right" tick={{ fontSize: isPrint ? 12 : 11, fill: '#ec4899', fontWeight: 900 }} axisLine={false} tickLine={false} tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val} />
             {!isPrint && <Tooltip content={<CustomTooltip />} />}
             <Legend 
               verticalAlign="top" 
@@ -187,16 +264,16 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, curren
               height={50} 
               iconType="circle" 
               onClick={toggleMetric} 
-              formatter={(val) => <span className="font-black uppercase tracking-widest text-[10px] ml-2 text-slate-500 hover:text-slate-900 transition-colors">{METRIC_CONFIG[val]?.label || val}</span>} 
+              formatter={(val) => <span className="font-black uppercase tracking-widest text-[10px] ml-2 text-slate-500 hover:text-slate-900 transition-colors cursor-pointer">{METRIC_CONFIG[val]?.label || val}</span>} 
             />
             
             {chartType === 'bar' ? (
                 <Bar yAxisId="right" dataKey={metric2} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} radius={[8, 8, 0, 0]} hide={hiddenMetrics.includes(metric2)} barSize={36} isAnimationActive={!isPrint} />
             ) : (
-                <Area yAxisId="right" type="monotone" dataKey={metric2} stroke={METRIC_CONFIG[metric2]?.color || '#ec4899'} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} fillOpacity={0.1} strokeWidth={isPrint ? 3 : 5} hide={hiddenMetrics.includes(metric2)} isAnimationActive={!isPrint} />
+                <Area yAxisId="right" type="monotone" dataKey={metric2} stroke={METRIC_CONFIG[metric2]?.color || '#ec4899'} fill={METRIC_CONFIG[metric2]?.color || '#ec4899'} fillOpacity={0.1} strokeWidth={isPrint ? 3 : 5} connectNulls hide={hiddenMetrics.includes(metric2)} isAnimationActive={!isPrint} />
             )}
             
-            <Line yAxisId="left" type="monotone" dataKey={metric1} stroke={METRIC_CONFIG[metric1]?.color || '#6366f1'} strokeWidth={isPrint ? 4 : 6} dot={{ r: 5, strokeWidth: 4, fill: '#fff' }} activeDot={{ r: 9, strokeWidth: 4, fill: '#6366f1' }} hide={hiddenMetrics.includes(metric1)} isAnimationActive={!isPrint} />
+            <Line yAxisId="left" type="monotone" dataKey={metric1} stroke={METRIC_CONFIG[metric1]?.color || '#6366f1'} strokeWidth={isPrint ? 4 : 6} dot={{ r: 5, strokeWidth: 4, fill: '#fff' }} activeDot={{ r: 9, strokeWidth: 4, fill: '#6366f1' }} connectNulls hide={hiddenMetrics.includes(metric1)} isAnimationActive={!isPrint} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>

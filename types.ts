@@ -13,6 +13,12 @@ export enum AppMode {
 
 export type AnalysisLanguage = 'ENG' | 'LV';
 
+export interface DateRange {
+  label: string;
+  start: string; // YYYY-MM-DD
+  end: string;   // YYYY-MM-DD
+}
+
 export interface GroundingSource {
   title: string;
   uri: string;
@@ -30,12 +36,20 @@ export interface KeyMetrics {
   revenue: number;
   impressions: number;
   clicks: number;
-  conversions: number;
+  conversions: number; // Blended total
   ctr: number;
   cpc: number;
-  cpa: number;
+  cpa: number; // Blended CPA
   roas: number;
   cpm: number;
+  // Granular Metrics
+  purchases: number;
+  costPerPurchase: number;
+  leads: number;
+  costPerLead: number;
+  frequency: number;
+  linkClicks: number;
+  landingPageViews: number;
 }
 
 export interface ScoreExplanation {
@@ -160,13 +174,18 @@ export interface DimensionFile {
   id: string;
   name: string;
   data: DataRow[];
-  type: 'DAILY' | 'DEMOGRAPHIC' | 'PLACEMENT' | 'CREATIVE' | 'UNKNOWN';
+  type: 'DAILY' | 'DEMOGRAPHIC' | 'PLACEMENT' | 'CREATIVE' | 'PLATFORM' | 'UNKNOWN';
 }
 
 export interface Dataset {
   name: string;
   files: DimensionFile[];
   source: 'CSV' | 'META' | 'GEN';
+  currency?: string; // Explicit currency code (e.g., 'EUR')
+  comparison?: {
+      label: string;
+      data: DataRow[];
+  };
 }
 
 export interface SimulationInputs {
